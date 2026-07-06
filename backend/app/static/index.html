@@ -1,0 +1,579 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wi-Fi Capture Orchestrator</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: #0e1116; color: #e6edf3; }
+  header { padding: 16px 24px; border-bottom: 1px solid #222b36; display: flex; align-items: baseline; gap: 12px; }
+  header h1 { font-size: 18px; margin: 0; font-weight: 650; }
+  header .sub { color: #8b98a5; font-size: 12px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 24px; }
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid #222b36; margin-bottom: 20px; }
+  .tabs button { background: none; border: none; border-radius: 0; color: #8b98a5; padding: 11px 18px; font-weight: 600; font-size: 14px; border-bottom: 2px solid transparent; cursor: pointer; }
+  .tabs button:hover { color: #e6edf3; }
+  .tabs button.active { color: #e6edf3; border-bottom-color: #2f81f7; }
+  .badge { display: inline-block; min-width: 18px; margin-left: 6px; padding: 1px 6px; border-radius: 20px; background: #21262d; color: #adbac7; font-size: 11px; font-weight: 700; }
+  .tab { display: none; }
+  .tab.active { display: block; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: #8b98a5; margin: 0 0 12px; }
+  .card { background: #161b22; border: 1px solid #222b36; border-radius: 10px; padding: 16px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; align-items: end; }
+  label { display: block; font-size: 12px; color: #8b98a5; margin-bottom: 4px; }
+  input, select { width: 100%; padding: 8px; background: #0e1116; border: 1px solid #2b3540; border-radius: 6px; color: #e6edf3; }
+  button { padding: 8px 14px; border: 0; border-radius: 6px; background: #2f81f7; color: #fff; font-weight: 600; cursor: pointer; }
+  button.secondary { background: #21262d; color: #e6edf3; border: 1px solid #2b3540; }
+  button.danger { background: #b62324; }
+  button:disabled { opacity: .5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid #222b36; font-variant-numeric: tabular-nums; }
+  th { color: #8b98a5; font-weight: 600; font-size: 12px; }
+  .state { font-size: 12px; padding: 2px 8px; border-radius: 20px; font-weight: 600; white-space: nowrap; }
+  .s-capturing, .s-running { background: #1f6feb33; color: #6cb6ff; }
+  .s-configuring, .s-confirming_radio, .s-finalizing, .s-stopping, .s-pending { background: #9e6a0333; color: #e3b341; }
+  .s-done { background: #23863633; color: #4ac26b; }
+  .s-failed, .s-cancelled { background: #b6232433; color: #ff7b72; }
+  .s-draft { background: #30363d; color: #adbac7; }
+  .muted { color: #8b98a5; }
+  .warn { color: #e3b341; font-size: 12px; min-height: 16px; }
+  .row-actions button, .sess-actions button { padding: 4px 10px; font-size: 12px; margin-right: 4px; }
+  .sess-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .sess-head .name { font-weight: 650; font-size: 15px; }
+  .totals { color: #8b98a5; font-size: 12px; margin-left: auto; }
+  code { color: #adbac7; font-size: 12px; }
+  .chips { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; z-index: 50; }
+  .modal { background: #161b22; border: 1px solid #2b3540; border-radius: 12px; padding: 20px; width: 100%; max-width: 720px; }
+  .aprow { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid #222b36; }
+  .aprow:hover { background: #1c2230; }
+  .aprow.taken { opacity: .55; }
+  .aprow .meta { color: #8b98a5; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Wi-Fi Capture Orchestrator</h1>
+  <span class="sub" id="health">direct SSH / rpcap</span>
+</header>
+<main>
+  <nav class="tabs">
+    <button data-tab="inventory" onclick="showTab('inventory')">Inventory<span id="badge-inventory" class="badge"></span></button>
+    <button data-tab="templates" onclick="showTab('templates')">Templates<span id="badge-templates" class="badge"></span></button>
+    <button data-tab="sessions" onclick="showTab('sessions')">Sessions<span id="badge-sessions" class="badge"></span></button>
+    <button data-tab="history" onclick="showTab('history')">History<span id="badge-history" class="badge"></span></button>
+  </nav>
+
+  <section id="tab-inventory" class="tab">
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+      <div style="font-size:12px;color:#8b98a5">Controllers authenticate to R1/SZ (API creds). Targets are the APs you capture from — import them from R1 or add manually.</div>
+      <button style="margin-left:auto" onclick="openImport()">⬇ Import AP from R1</button>
+    </div>
+    <div id="controllers"></div>
+    <details style="margin-top:6px"><summary style="cursor:pointer;color:#8b98a5">+ add controller</summary>
+      <div class="grid" style="margin-top:10px">
+        <div><label>Platform</label><select id="cPlat" onchange="toggleCtrlFields()"><option value="r1">Ruckus One</option><option value="sz">SmartZone</option></select></div>
+        <div><label>Name</label><input id="cName" placeholder="R1 prod"></div>
+      </div>
+      <div id="r1fields" class="grid" style="margin-top:10px">
+        <div><label>Client ID</label><input id="cClientId" placeholder="client_id"></div>
+        <div><label>Shared secret</label><input id="cClientSecret" type="password"></div>
+        <div><label>Region (opt)</label><input id="cRegion" placeholder="na / eu / asia"></div>
+        <div><label>Tenant ID (opt)</label><input id="cTenant"></div>
+      </div>
+      <div id="szfields" class="grid" style="margin-top:10px;display:none">
+        <div style="grid-column:span 2"><label>Base URL</label><input id="cBaseUrl" placeholder="https://sz.example:8443"></div>
+        <div><label>API username</label><input id="cApiUser"></div>
+        <div><label>API password</label><input id="cApiPass" type="password"></div>
+        <div><label>API version</label><input id="cApiVer" placeholder="v13_0"></div>
+      </div>
+      <div style="margin-top:12px">
+        <button id="ctrlSubmit" onclick="submitController()">Add controller</button>
+        <button id="ctrlCancel" class="secondary" style="display:none" onclick="cancelCtrlEdit()">Cancel</button>
+        <span id="ctrlEditNote" class="muted" style="margin-left:8px"></span>
+      </div>
+    </details>
+    <hr style="border-color:#222b36;margin:14px 0">
+    <div id="targets"></div>
+    <details style="margin-top:6px"><summary style="cursor:pointer;color:#8b98a5">+ add target (AP)</summary>
+      <div class="grid" style="margin-top:10px">
+        <div><label>Name</label><input id="tName" placeholder="lobby-R510"></div>
+        <div><label>Mgmt IP</label><input id="tHost" placeholder="10.0.71.128"></div>
+        <div><label>Controller</label><select id="tCtrl"></select></div>
+        <div><label>Model</label><input id="tModel" placeholder="R510"></div>
+        <div><label>SSH username</label><input id="tUser" placeholder="admin (or env)"></div>
+        <div><label>SSH password</label><input id="tPass" type="password" placeholder="blank = env fallback"></div>
+      </div>
+      <div style="margin-top:12px">
+        <button id="tgtSubmit" onclick="submitTarget()">Add target</button>
+        <button id="tgtCancel" class="secondary" style="display:none" onclick="cancelTgtEdit()">Cancel</button>
+        <span id="tgtEditNote" class="muted" style="margin-left:8px"></span>
+      </div>
+    </details>
+    <div id="invErr" class="warn"></div>
+  </div>
+  </section>
+
+  <section id="tab-templates" class="tab">
+    <div id="templates"></div>
+  </section>
+
+  <section id="tab-sessions" class="tab">
+    <div class="card">
+      <div style="font-weight:650;font-size:15px;margin-bottom:6px">Build a session</div>
+      <div style="font-size:12px;color:#8b98a5;margin-bottom:12px">Mode A — <b>Streaming</b> (live): <b>one radio / one channel per AP</b> (single rpcapd). For another band or channel, use a different AP. <i>Mode B — local multi-radio capture: in progress.</i></div>
+      <div id="build"></div>
+      <div id="buildErr" class="warn"></div>
+    </div>
+    <div id="sessions"></div>
+  </section>
+
+  <section id="tab-history" class="tab">
+    <div class="card" style="display:flex;align-items:center;gap:12px">
+      <span id="diskUsage" class="muted">—</span>
+      <button class="danger" style="margin-left:auto" onclick="purgeCompleted()">Purge all completed</button>
+    </div>
+    <div id="history"></div>
+  </section>
+</main>
+
+<div id="importModal" class="modal-bg" style="display:none">
+  <div class="modal">
+    <div class="sess-head"><span class="name">Import APs from R1</span>
+      <button class="secondary" style="margin-left:auto" onclick="closeImport()">✕</button></div>
+    <div class="grid" style="margin-top:12px">
+      <div><label>Controller</label><select id="imCtrl" onchange="imLoadVenues()"></select></div>
+      <div><label>Venue</label><select id="imVenue" onchange="imLoadAps()"><option value="">—</option></select></div>
+    </div>
+    <div id="imStatus" class="muted" style="margin:10px 0;min-height:16px"></div>
+    <div id="imAps" style="max-height:320px;overflow:auto;border:1px solid #222b36;border-radius:8px"></div>
+    <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
+      <button id="imBtn" onclick="doImport()" disabled>Import selected</button>
+      <button class="secondary" onclick="imSelectAll()">Select all new</button>
+      <span id="imErr" class="warn"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+const RADIOS = [['wifi0','2.4 GHz'],['wifi1','5 GHz'],['wifi2','6 GHz']];
+const DFS_CH = new Set([52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,144]);
+function dfsHint(){
+  const el=document.getElementById('dfsHint'); if(!el) return;
+  const iface=document.getElementById('swIface').value;
+  const chans=document.getElementById('swChans').value.split(',').map(x=>Number(x.trim())).filter(x=>x>0);
+  const w=document.getElementById('swWidth').value?Number(document.getElementById('swWidth').value):null;
+  // validation error takes priority (red)
+  for(const c of chans){ const e=validateChanWidth(iface,c,w); if(e){ el.style.color='#e3b341'; el.textContent='⚠ '+e; return; } }
+  if(chans.some(c=>DFS_CH.has(c))){
+    el.style.color='#8b98a5';
+    el.textContent = `ℹ Includes a 5 GHz DFS channel (52–144). Capture is NOT delayed — frames flow during the CAC radar-listen period (verified ~6s to first frame). CAC only holds the AP's own beacon, which passive capture ignores.`;
+  } else { el.textContent=''; }
+}
+let draft = null;         // {id, name} being built
+let TARGETS = [], CONTROLLERS = [];
+let editCtrlId = null, editTgtId = null;
+const tOpt = t => `<option value="${t.id}">${esc(t.name)} · ${t.host}${t.has_stored_password?'':' ⚠no pw'}</option>`;
+const targetOpts = () => TARGETS.length ? TARGETS.map(tOpt).join('') : `<option value="">(add a target under Inventory first)</option>`;
+const targetMultiOpts = () => TARGETS.map(tOpt).join('');
+const widthOpts = () => `<option value="">AP default</option>`+[20,40,80,160].map(w=>`<option value="${w}">${w} MHz</option>`).join('');
+
+const fmtBytes = b => b>1e6 ? (b/1e6).toFixed(1)+' MB' : b>1e3 ? (b/1e3).toFixed(1)+' KB' : b+' B';
+const esc = s => (s??'').toString().replace(/[<>&]/g, c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+const api = async (m,u,b) => { const r = await fetch(u,{method:m,headers:b?{'Content-Type':'application/json'}:{},body:b?JSON.stringify(b):undefined}); if(!r.ok) throw new Error((await r.json().catch(()=>({detail:r.status}))).detail); return r.status===200?r.json():null; };
+const radioOpts = sel => RADIOS.map(([v,l])=>`<option value="${v}" ${v===sel?'selected':''}>${v} · ${l}</option>`).join('');
+
+async function health(){ try{ const h=await api('GET','/api/health'); document.getElementById('health').textContent='direct SSH / rpcap · '+(h.ap_password_fallback_set?'env password fallback set':'creds from inventory'); }catch{} }
+
+// ---- inventory ----
+const invErr = m => document.getElementById('invErr').textContent = m||'';
+function toggleCtrlFields(){
+  const sz = document.getElementById('cPlat').value==='sz';
+  document.getElementById('szfields').style.display = sz?'grid':'none';
+  document.getElementById('r1fields').style.display = sz?'none':'grid';
+}
+const val = id => document.getElementById(id).value.trim();
+const setv = (id,v) => document.getElementById(id).value = v||'';
+const CTRL_FIELDS=['cName','cClientId','cClientSecret','cRegion','cTenant','cBaseUrl','cApiUser','cApiPass','cApiVer'];
+async function submitController(){
+  const plat=document.getElementById('cPlat').value;
+  if(!val('cName')){ invErr('controller needs a name'); return; }
+  const b={name:val('cName')};
+  if(plat==='r1'){
+    b.api_client_id=val('cClientId'); b.region=val('cRegion')||null; b.tenant_id=val('cTenant')||null;
+    if(document.getElementById('cClientSecret').value) b.api_client_secret=document.getElementById('cClientSecret').value;
+  } else {
+    b.base_url=val('cBaseUrl'); b.api_username=val('cApiUser'); b.api_version=val('cApiVer');
+    if(document.getElementById('cApiPass').value) b.api_password=document.getElementById('cApiPass').value;
+  }
+  invErr('');
+  try{
+    if(editCtrlId){ await api('PUT','/api/controllers/'+editCtrlId,b); }
+    else { b.platform=plat; await api('POST','/api/controllers',b); }
+    cancelCtrlEdit(); refreshInventory();
+  }catch(e){ invErr(e.message); }
+}
+function editController(id){
+  const c=CONTROLLERS.find(x=>x.id===id); if(!c) return;
+  editCtrlId=id;
+  document.getElementById('cPlat').value=c.platform; document.getElementById('cPlat').disabled=true; toggleCtrlFields();
+  setv('cName',c.name); setv('cClientId',c.api_client_id); setv('cRegion',c.region); setv('cTenant',c.tenant_id);
+  setv('cBaseUrl',c.base_url); setv('cApiUser',c.api_username); setv('cApiVer',c.api_version);
+  setv('cClientSecret',''); setv('cApiPass','');
+  document.getElementById('ctrlSubmit').textContent='Save changes';
+  document.getElementById('ctrlCancel').style.display='inline-block';
+  document.getElementById('ctrlEditNote').textContent=`editing "${c.name}" — leave secret blank to keep`;
+  document.getElementById('cName').closest('details').open=true;
+}
+function cancelCtrlEdit(){
+  editCtrlId=null; document.getElementById('cPlat').disabled=false;
+  CTRL_FIELDS.forEach(i=>setv(i,''));
+  document.getElementById('ctrlSubmit').textContent='Add controller';
+  document.getElementById('ctrlCancel').style.display='none';
+  document.getElementById('ctrlEditNote').textContent='';
+}
+async function delController(id){
+  const c=CONTROLLERS.find(x=>x.id===id);
+  if(!confirm(`Delete controller "${c?c.name:id}"? Targets under it will be unlinked (their capture then falls back to per-target or env creds).`)) return;
+  await api('DELETE','/api/controllers/'+id); refreshInventory();
+}
+const TGT_FIELDS=['tName','tHost','tModel','tUser','tPass'];
+async function submitTarget(){
+  if(!val('tName')||!val('tHost')){ invErr('target needs a name and IP'); return; }
+  const b={name:val('tName'), host:val('tHost'), controller_id:document.getElementById('tCtrl').value||null,
+           model:val('tModel')||null, ssh_username:val('tUser')||null};
+  if(document.getElementById('tPass').value) b.ssh_password=document.getElementById('tPass').value;
+  invErr('');
+  try{
+    if(editTgtId){ await api('PUT','/api/targets/'+editTgtId,b); }
+    else { await api('POST','/api/targets',b); }
+    cancelTgtEdit(); refreshInventory();
+  }catch(e){ invErr(e.message); }
+}
+function editTarget(id){
+  const t=TARGETS.find(x=>x.id===id); if(!t) return;
+  editTgtId=id;
+  setv('tName',t.name); setv('tHost',t.host); setv('tModel',t.model); setv('tUser',t.ssh_username); setv('tPass','');
+  document.getElementById('tCtrl').value=t.controller_id||'';
+  document.getElementById('tgtSubmit').textContent='Save changes';
+  document.getElementById('tgtCancel').style.display='inline-block';
+  document.getElementById('tgtEditNote').textContent=`editing "${t.name}" — leave SSH password blank to keep`;
+  document.getElementById('tName').closest('details').open=true;
+}
+function cancelTgtEdit(){
+  editTgtId=null; TGT_FIELDS.forEach(i=>setv(i,'')); document.getElementById('tCtrl').value='';
+  document.getElementById('tgtSubmit').textContent='Add target';
+  document.getElementById('tgtCancel').style.display='none';
+  document.getElementById('tgtEditNote').textContent='';
+}
+async function delTarget(id){
+  const t=TARGETS.find(x=>x.id===id);
+  if(!confirm(`Delete target AP "${t?t.name:id}" (${t?t.host:''})?`)) return;
+  await api('DELETE','/api/targets/'+id); refreshInventory();
+}
+function ctrlRow(c){
+  const api = c.has_api_creds?`✅ API${c.api_version?` ${c.api_version}`:''}`:'<span class=warn>API creds missing</span>';
+  return `<tr><td>${esc(c.name)}</td><td>${c.platform.toUpperCase()}</td>
+  <td>${api}</td>
+  <td class="muted">${c.target_count} target(s)</td>
+  <td class="row-actions"><button class="secondary" onclick="editController('${c.id}')">edit</button>
+    <button class="danger" onclick="delController('${c.id}')">✕</button></td></tr>`; }
+function tgtRow(t){ return `<tr><td>${esc(t.name)}</td><td>${t.host}</td><td class="muted">${esc(t.model)||'—'}</td>
+  <td class="muted">${esc(t.controller_name)||'—'}</td>
+  <td>${t.has_stored_password?`🔑 ${esc(t.ssh_username_effective)}`:'<span class=muted>env fallback</span>'}</td>
+  <td class="row-actions"><button class="secondary" onclick="editTarget('${t.id}')">edit</button>
+    <button class="danger" onclick="delTarget('${t.id}')">✕</button></td></tr>`; }
+// ---- import from R1 modal ----
+function openImport(){
+  const r1=CONTROLLERS.filter(c=>c.platform==='r1');
+  if(!r1.length){ alert('Add a Ruckus One controller first (with tenant ID + API creds).'); return; }
+  document.getElementById('imCtrl').innerHTML=r1.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  document.getElementById('imVenue').innerHTML='<option value="">—</option>';
+  document.getElementById('imAps').innerHTML=''; document.getElementById('imErr').textContent='';
+  document.getElementById('imBtn').disabled=true;
+  document.getElementById('importModal').style.display='flex';
+  imLoadVenues();
+}
+function closeImport(){ document.getElementById('importModal').style.display='none'; }
+const imStatus = m => document.getElementById('imStatus').textContent = m||'';
+async function imLoadVenues(){
+  const cid=document.getElementById('imCtrl').value; if(!cid) return;
+  imStatus('loading venues…'); document.getElementById('imAps').innerHTML='';
+  try{
+    const vs=await api('GET',`/api/controllers/${cid}/venues`);
+    document.getElementById('imVenue').innerHTML='<option value="">— select venue —</option>'+vs.map(v=>`<option value="${v.external_id}">${esc(v.name)}</option>`).join('');
+    imStatus(vs.length?`${vs.length} venue(s)`:'no venues');
+  }catch(e){ imStatus(''); document.getElementById('imErr').textContent=e.message; }
+}
+async function imLoadAps(){
+  const cid=document.getElementById('imCtrl').value, vid=document.getElementById('imVenue').value;
+  document.getElementById('imAps').innerHTML=''; document.getElementById('imBtn').disabled=true;
+  if(!vid) return;
+  imStatus('loading APs…');
+  try{
+    const aps=await api('GET',`/api/controllers/${cid}/venues/${vid}/aps`);
+    document.getElementById('imAps').innerHTML = aps.length ? aps.map(a=>`
+      <label class="aprow ${a.already_target?'taken':''}">
+        <input type="checkbox" class="imChk" value="${a.serial}" ${a.already_target?'disabled':''}>
+        <div><b>${esc(a.name)}</b> <span class="meta">${esc(a.model)||''} · ${a.ip||'no-ip'} · ${a.serial}${a.already_target?' · already imported':''}</span>
+          <div class="meta">${esc(a.state)||''}</div></div>
+      </label>`).join('') : '<div class="muted" style="padding:12px">No APs in this venue.</div>';
+    document.querySelectorAll('.imChk').forEach(c=>c.onchange=imUpdateBtn);
+    imStatus(`${aps.length} AP(s)`); imUpdateBtn();
+  }catch(e){ imStatus(''); document.getElementById('imErr').textContent=e.message; }
+}
+function imSelected(){ return [...document.querySelectorAll('.imChk:checked')].map(c=>c.value); }
+function imUpdateBtn(){ const n=imSelected().length; const b=document.getElementById('imBtn'); b.disabled=!n; b.textContent=n?`Import ${n} AP(s)`:'Import selected'; }
+function imSelectAll(){ document.querySelectorAll('.imChk:not(:disabled)').forEach(c=>c.checked=true); imUpdateBtn(); }
+async function doImport(){
+  const cid=document.getElementById('imCtrl').value, vid=document.getElementById('imVenue').value, serials=imSelected();
+  if(!serials.length) return;
+  document.getElementById('imErr').textContent=''; imStatus('importing (fetching per-AP passwords)…');
+  document.getElementById('imBtn').disabled=true;
+  try{
+    const r=await api('POST',`/api/controllers/${cid}/import`,{venue_id:vid,serials});
+    imStatus(`imported ${r.length} AP(s)`); await refreshInventory(); closeImport();
+  }catch(e){ imStatus(''); document.getElementById('imErr').textContent=e.message; document.getElementById('imBtn').disabled=false; }
+}
+
+async function refreshInventory(){
+  try{
+    CONTROLLERS=await api('GET','/api/controllers'); TARGETS=await api('GET','/api/targets');
+    document.getElementById('controllers').innerHTML = CONTROLLERS.length?
+      `<table><thead><tr><th>Controller</th><th>Platform</th><th>API auth</th><th>Targets</th><th></th></tr></thead><tbody>${CONTROLLERS.map(ctrlRow).join('')}</tbody></table>`:'<div class="muted">No controllers yet.</div>';
+    document.getElementById('targets').innerHTML = TARGETS.length?
+      `<table><thead><tr><th>Target AP</th><th>IP</th><th>Model</th><th>Controller</th><th>Creds</th><th></th></tr></thead><tbody>${TARGETS.map(tgtRow).join('')}</tbody></table>`:'<div class="muted">No targets yet.</div>';
+    document.getElementById('tCtrl').innerHTML = `<option value="">— none —</option>`+CONTROLLERS.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+    setBadge('inventory', TARGETS.length);
+  }catch{}
+}
+
+// ---- build panel ----
+function renderBuild(sess){
+  const el = document.getElementById('build');
+  if(!draft){
+    el.innerHTML = `<div class="grid">
+      <div style="grid-column:span 2"><label>Session name</label><input id="newName" placeholder="e.g. ch sweep — lobby"></div>
+      <div><button onclick="createSession()">Create draft</button></div></div>`;
+    return;
+  }
+  const rows = (sess?.assignments||[]).map(a=>`<tr>
+     <td>${esc(a.ap_host)}</td><td>${a.iface}</td><td>${a.target_channel??'—'}${a.width_mhz?` / ${a.width_mhz}MHz`:''}</td><td class="muted">${flagsLabel(a.flags)}</td>
+     <td class="row-actions"><button class="danger" onclick="removeAssignment('${a.id}')">✕</button></td></tr>`).join('');
+  el.innerHTML = `
+    <div class="sess-head"><span class="name">${esc(draft.name)}</span>
+      <span class="state s-draft">draft</span><code>${draft.id}</code>
+      <span class="totals">${(sess?.assignments||[]).length} assignment(s)</span></div>
+    <table><thead><tr><th>AP mgmt IP</th><th>Radio</th><th>Chan / width</th><th>Frames</th><th></th></tr></thead>
+      <tbody>${rows||'<tr><td colspan=5 class=muted>No radios yet — pick APs + channels below.</td></tr>'}</tbody></table>
+    <div class="grid" style="margin-top:14px">
+      <div style="grid-column:span 2"><label>Target APs (ctrl/⌘-click for several)</label>
+        <select id="swTargets" multiple size="4">${targetMultiOpts()}</select></div>
+      <div><label>Radio</label><select id="swIface" onchange="dfsHint()">${radioOpts('wifi0')}</select></div>
+      <div><label>Channels (comma, paired to APs in order)</label><input id="swChans" placeholder="1, 6, 11" oninput="dfsHint()"></div>
+      <div><label>Width</label><select id="swWidth">${widthOpts()}</select></div>
+    </div>
+    <div style="margin-top:12px">
+      <label>Capture frame types <span onclick="var e=document.getElementById('flagHelp');e.style.display=e.style.display==='none'?'block':'none'" style="cursor:pointer;color:#2f81f7">ⓘ</span></label>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:4px;font-size:13px">
+        <label><input type="checkbox" id="fBeacon" checked> Beacons</label>
+        <label><input type="checkbox" id="fMgmt" checked> Management</label>
+        <label><input type="checkbox" id="fCtrl" checked> Control</label>
+        <label><input type="checkbox" id="fData" checked> Data</label>
+        <label><input type="checkbox" id="fPromisc" checked> Other BSSs</label>
+      </div>
+      <div id="flagHelp" class="muted" style="display:none;margin-top:6px;font-size:12px;line-height:1.5">
+        All frame types captured by default (promiscuous — includes neighboring BSSs). Uncheck to cut noise/size:
+        <b>Beacons</b> = periodic AP advertisements (usually the bulk of frames) ·
+        <b>Management</b> = probe/auth/assoc/beacon · <b>Control</b> = ACK/RTS/CTS/BlockAck ·
+        <b>Data</b> = payload frames · <b>Other BSSs</b> off = only this AP's own BSS, not neighbors.
+      </div>
+    </div>
+    <div id="dfsHint" class="warn" style="margin-top:6px"></div>
+    <div style="margin-top:10px"><button class="secondary" onclick="addSweep()">+ Add radios to session</button></div>
+    <hr style="border-color:#222b36;margin:16px 0">
+    <div class="chips">
+      <div><label>Duration (s, blank = 2 min default)</label><input id="dur" type="number" min="1" placeholder="120" style="width:180px"></div>
+      <button onclick="startSession()" ${(sess?.assignments||[]).length?'':'disabled'}>Start session</button>
+      <button class="secondary" onclick="newDraft()">New session</button>
+    </div>`;
+}
+async function refreshBuild(){ if(!draft){ renderBuild(); return; } try{ renderBuild(await api('GET','/api/sessions/'+draft.id)); }catch{ draft=null; renderBuild(); } }
+
+function newDraft(){ draft=null; renderBuild(); }
+async function createSession(){
+  const name=document.getElementById('newName').value.trim(); if(!name) return;
+  const s=await api('POST','/api/sessions',{name}); draft={id:s.id,name:s.name}; refreshBuild();
+}
+function flagsLabel(f){
+  if(!f) return 'all';
+  const m={b:'beacons',c:'control',m:'mgmt',d:'data',p:'own-BSS only'};
+  const ex=[]; ['b','c','m','d','p'].forEach(k=>{ if(f.includes(k)) ex.push(k==='p'?m.p:'no '+m[k]); });
+  return ex.join(', ')||'all';
+}
+// --- channel/width sanity check per radio/band ---
+const CH5=[36,40,44,48,52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,144,149,153,157,161,165];
+function validateChanWidth(iface, ch, width){
+  const band = iface==='wifi0'?'2.4':iface==='wifi1'?'5':'6';
+  if(band==='2.4'){
+    if(ch<1||ch>14) return `ch ${ch}: wifi0 is 2.4 GHz (channels 1–14)`;
+    if(width&&![20,40].includes(width)) return `ch ${ch}: 2.4 GHz supports only 20/40 MHz (not ${width})`;
+  } else if(band==='5'){
+    if(!CH5.includes(ch)) return `ch ${ch}: not a valid 5 GHz channel for wifi1`;
+    if(width===160 && ch>128) return `ch ${ch}: 160 MHz only in the 36–64 or 100–128 blocks`;
+    if(width===80 && ch>161) return `ch ${ch}: 165 can't bond to 80 MHz`;
+  } else { // 6 GHz (wifi2) — light check
+    if(ch<1||ch>233) return `ch ${ch}: out of 6 GHz range`;
+  }
+  return null;
+}
+async function startSession(){
+  const d=document.getElementById('dur').value; err('');
+  try{ await api('POST',`/api/sessions/${draft.id}/start`, d?{duration_s:Number(d)}:{}); draft=null; renderBuild(); refresh(); }
+  catch(e){ err(e.message); }
+}
+const err = m => document.getElementById('buildErr').textContent = m||'';
+
+function sweepFlags(){
+  let s='';
+  if(!document.getElementById('fBeacon').checked) s+='b';
+  if(!document.getElementById('fCtrl').checked)   s+='c';
+  if(!document.getElementById('fMgmt').checked)   s+='m';
+  if(!document.getElementById('fData').checked)   s+='d';
+  if(!document.getElementById('fPromisc').checked) s+='p';
+  return s ? '-no'+s : '';
+}
+async function addSweep(){
+  const tids=[...document.getElementById('swTargets').selectedOptions].map(o=>o.value).filter(Boolean);
+  const chans=document.getElementById('swChans').value.split(',').map(x=>Number(x.trim())).filter(x=>x>0);
+  const iface=document.getElementById('swIface').value;
+  const w=document.getElementById('swWidth').value?Number(document.getElementById('swWidth').value):null;
+  const flags=sweepFlags();
+  if(!tids.length||!chans.length){ err('pick target APs and channels'); return; }
+  // sanity-check every channel against the radio/band/width before submitting
+  for(const c of chans){ const e=validateChanWidth(iface,c,w); if(e){ err(e); return; } }
+  err('');
+  try{
+    for(let i=0;i<tids.length;i++){        // each selected AP gets a channel (cycling if fewer)
+      const a={target_id:tids[i],iface,target_channel:chans[i%chans.length]};
+      if(w) a.width_mhz=w; if(flags) a.flags=flags;
+      await api('POST',`/api/sessions/${draft.id}/assignments`,a);
+    }
+    refreshBuild();
+  }catch(e){ err(e.message); }
+}
+async function removeAssignment(aid){ await api('DELETE',`/api/sessions/${draft.id}/assignments/${aid}`); refreshBuild(); }
+
+// ---- templates ----
+async function saveTemplate(sid){
+  const name=prompt('Template name?'); if(name===null) return;
+  try{ await api('POST',`/api/sessions/${sid}/save-template`, name?{name}:{}); refreshTemplates(); }
+  catch(e){ alert('Save template: '+e.message); }
+}
+async function useTemplate(tid){
+  const s=await api('POST',`/api/templates/${tid}/instantiate`,{});
+  draft={id:s.id,name:s.name}; showTab('sessions'); refreshBuild(); refresh(); window.scrollTo({top:0,behavior:'smooth'});
+}
+async function deleteTemplate(tid){ await api('DELETE','/api/templates/'+tid); refreshTemplates(); }
+function templateCard(t){
+  const rows=t.assignments.map(a=>`${esc(a.ap_host)} <span class=muted>${a.iface}${a.target_channel?` ch${a.target_channel}`:''}</span>`).join(' · ');
+  return `<div class="card"><div class="sess-head">
+    <span class="name">${esc(t.name)}</span><span class="totals">${t.assignments.length} assignment(s)</span></div>
+    <div class="muted" style="margin:6px 0">${rows||'—'}</div>
+    <div class="sess-actions"><button onclick="useTemplate('${t.id}')">Use → draft</button>
+      <button class=secondary onclick="deleteTemplate('${t.id}')">Delete</button></div></div>`;
+}
+async function refreshTemplates(){
+  try{ const ts=await api('GET','/api/templates');
+    document.getElementById('templates').innerHTML = ts.length?ts.map(templateCard).join(''):'<div class="card muted">No templates — build a session and “Save as template”.</div>';
+    setBadge('templates', ts.length);
+  }catch{}
+}
+
+// ---- sessions list ----
+function assignmentRow(a){
+  const last = a.seconds_since_last_frame==null ? '' : `<span class=muted>${a.seconds_since_last_frame}s ago</span>`;
+  return `<tr>
+    <td>${esc(a.ap_host)}<br><span class=muted>${a.iface}${a.linktype?` · dlt ${a.linktype}`:''}</span></td>
+    <td>${a.target_channel??'—'}${a.width_mhz?` <span class=muted>/${a.width_mhz}</span>`:''}${a.channel&&a.channel!==a.target_channel?` <span class=muted>(act ${a.channel})</span>`:''}</td>
+    <td><span class="state s-${a.status}">${a.status}</span>${a.error?`<br><span class=warn>${esc(a.error).slice(0,50)}</span>`:''}</td>
+    <td>${a.frames.toLocaleString()}</td><td>${fmtBytes(a.bytes)}</td>
+    <td>${a.elapsed_s!=null?a.elapsed_s+'s':''} ${last}</td>
+    <td class="row-actions">
+      ${a.has_file?`<button class=secondary onclick="location.href='/api/assignments/${a.id}/download'">pcap</button>`:''}
+      ${a.has_file?`<button class=secondary onclick="window.open('/api/assignments/${a.id}/sidecar')">json</button>`:''}</td></tr>`;
+}
+function sessionCard(s){
+  const t=s.totals, active=s.status==='running'||s.status==='stopping';
+  const withFile = s.assignments.filter(a=>a.has_file).length;
+  const arts = (s.artifacts||[]).map(a=>{
+    const al=a.meta?.alignment?.summary; let align='';
+    if(al && al.start_spread_s!=null){
+      align=`<div style="margin-top:3px;color:${al.aligned?'#4ac26b':'#e3b341'}">
+        ${al.aligned?'✓ time-aligned':'⚠ check alignment'} — start spread ${al.start_spread_s}s · overlap ${al.overlap_s}s${al.aligned?' (NTP-consistent)':' — AP clock skew or staggered starts; merged timeline may be off'}</div>`;
+    }
+    return `<div class="muted" style="margin-top:6px">
+     merged · ${a.meta?.tool||'?'} · ${fmtBytes(a.size_bytes)} · <code>${(a.sha256||'').slice(0,12)}</code>
+     <button class=secondary onclick="location.href='/api/artifacts/${a.id}/download'">download</button>${align}</div>`;
+  }).join('');
+  return `<div class="card">
+    <div class="sess-head">
+      <span class="name">${esc(s.name)}</span><span class="state s-${s.status}">${s.status}</span>
+      <code>${s.id}</code>
+      <span class="totals">${t.assignments} radios · ${t.frames.toLocaleString()} frames · ${fmtBytes(t.bytes)}
+        ${t.failed?` · <span style=color:#ff7b72>${t.failed} failed</span>`:''}</span>
+    </div>
+    <table><thead><tr><th>AP · radio</th><th>Chan</th><th>State</th><th>Frames</th><th>Bytes</th><th>Elapsed</th><th></th></tr></thead>
+      <tbody>${s.assignments.map(assignmentRow).join('')||'<tr><td colspan=7 class=muted>No assignments</td></tr>'}</tbody></table>
+    ${arts}
+    <div class="sess-actions" style="margin-top:12px">
+      ${s.status==='draft'?`<button onclick="continueDraft('${s.id}','${esc(s.name)}')">Edit / start</button>`:''}
+      ${active?`<button class=danger onclick="stopSession('${s.id}')">Stop session</button>`:''}
+      ${withFile>=2?`<button class=secondary onclick="mergeSession('${s.id}')">Merge ${withFile} pcaps</button>`:''}
+      ${!active?`<button class=secondary onclick="saveTemplate('${s.id}')">Save as template</button>`:''}
+      ${['draft','done','failed'].includes(s.status)?`<button class=secondary onclick="deleteSession('${s.id}')">Delete</button>`:''}
+    </div></div>`;
+}
+async function mergeSession(id){ try{ await api('POST',`/api/sessions/${id}/merge`,{}); refresh(); }catch(e){ alert('Merge: '+e.message); } }
+function continueDraft(id,name){ draft={id,name}; showTab('sessions'); refreshBuild(); window.scrollTo({top:0,behavior:'smooth'}); }
+async function stopSession(id){ await api('POST',`/api/sessions/${id}/stop`); refresh(); }
+async function deleteSession(id){
+  if(!confirm('Delete this session and its pcap/sidecar files from disk?')) return;
+  await api('DELETE','/api/sessions/'+id); if(draft&&draft.id===id){draft=null;renderBuild();} refresh(); refreshDisk();
+}
+async function purgeCompleted(){
+  if(!confirm('Delete ALL completed (done/failed) sessions and their capture files from disk? This cannot be undone.')) return;
+  try{ const r=await api('POST','/api/maintenance/purge-completed',{}); alert(`Purged ${r.sessions_deleted} session(s), removed ${r.files_removed} file(s).`); refresh(); refreshDisk(); }
+  catch(e){ alert('Purge: '+e.message); }
+}
+async function refreshDisk(){
+  try{ const d=await api('GET','/api/maintenance/disk-usage');
+    document.getElementById('diskUsage').textContent = `Capture storage: ${fmtBytes(d.bytes)} across ${d.files} file(s) in ${d.capture_dir}`;
+  }catch{}
+}
+
+async function refresh(){
+  try{ const ss=await api('GET','/api/sessions');
+    const active=ss.filter(s=>['draft','running','stopping'].includes(s.status));
+    const hist=ss.filter(s=>['done','failed','cancelled'].includes(s.status));
+    document.getElementById('sessions').innerHTML = active.length?active.map(sessionCard).join(''):'<div class="card muted">No active sessions — build one above.</div>';
+    document.getElementById('history').innerHTML = hist.length?hist.map(sessionCard).join(''):'<div class="card muted">No completed sessions yet.</div>';
+    setBadge('sessions', active.length); setBadge('history', hist.length);
+  }catch{}
+}
+
+// ---- tabs ----
+function showTab(name){
+  document.querySelectorAll('.tab').forEach(s=>s.classList.toggle('active', s.id==='tab-'+name));
+  document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab===name));
+}
+function setBadge(name, n){ const el=document.getElementById('badge-'+name); if(el) el.textContent = n||''; el && (el.style.display = n?'inline-block':'none'); }
+
+showTab('sessions');
+health(); refreshInventory().then(renderBuild); refresh(); refreshTemplates(); refreshDisk(); setInterval(refresh, 1500); setInterval(refreshDisk, 15000);
+</script>
+</body>
+</html>

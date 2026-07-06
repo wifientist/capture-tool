@@ -1,0 +1,47 @@
+# Wi-Fi Capture Orchestrator — persistent stack.
+#
+# Required config comes from a .env file in this directory (see .env.example).
+# Compose ERRORS if a required variable is unset — no baked-in defaults here.
+#
+# The `api` service uses host networking on purpose: the AP's rpcapd streams by
+# dialing BACK to the capture host (SERVEROPEN), so the container must share the
+# host's LAN identity and bind arbitrary ports the AP connects to. Linux-only,
+# matching the single-host LAN deployment.
+#
+# Usage:  cp .env.example .env  &&  edit .env  &&  docker compose up -d --build
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${CT_DB_USER:?set CT_DB_USER in .env}
+      POSTGRES_PASSWORD: ${CT_DB_PASSWORD:?set CT_DB_PASSWORD in .env}
+      POSTGRES_DB: ${CT_DB_NAME:?set CT_DB_NAME in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "${CT_DB_PORT:?set CT_DB_PORT in .env}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CT_DB_USER}"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    network_mode: host          # AP dials back to the capture host for rpcap streaming
+    # Optional app settings (e.g. CT_AP_PASSWORD / CT_AP_USERNAME fallback) pass
+    # through from .env only if you set them — no baked-in defaults.
+    env_file: .env
+    environment:
+      CT_DATABASE_URL: postgresql+asyncpg://${CT_DB_USER}:${CT_DB_PASSWORD}@127.0.0.1:${CT_DB_PORT}/${CT_DB_NAME}
+      CT_CAPTURE_DIR: ${CT_CAPTURE_DIR:?set CT_CAPTURE_DIR in .env}
+    volumes:
+      - ${CT_CAPTURE_DATA:?set CT_CAPTURE_DATA in .env}:/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

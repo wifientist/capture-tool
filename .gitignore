@@ -1,0 +1,11 @@
+backend/.venv/
+__pycache__/
+*.pyc
+*.db
+.env
+data/captures/*.pcap
+data/captures/*.json
+data/*.db
+backend/logs/
+backend/.venv/
+
