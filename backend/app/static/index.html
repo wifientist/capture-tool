@@ -545,9 +545,11 @@ async function deleteSession(id){
   await api('DELETE','/api/sessions/'+id); if(draft&&draft.id===id){draft=null;renderBuild();} refresh(); refreshDisk();
 }
 async function purgeCompleted(){
-  if(!confirm('Delete ALL completed (done/failed) sessions and their capture files from disk? This cannot be undone.')) return;
-  try{ const r=await api('POST','/api/maintenance/purge-completed',{}); alert(`Purged ${r.sessions_deleted} session(s), removed ${r.files_removed} file(s).`); refresh(); refreshDisk(); }
-  catch(e){ alert('Purge: '+e.message); }
+  if(!confirm('Delete ALL completed (done/failed) sessions AND any orphaned capture files (from deleted sessions / ad-hoc runs) from disk? This cannot be undone.')) return;
+  try{ const r=await api('POST','/api/maintenance/purge-completed',{});
+    alert(`Purged ${r.sessions_deleted} session(s) and ${r.files_removed} file(s); swept ${r.orphans_removed} orphan(s) (${fmtBytes(r.orphan_bytes||0)}).`);
+    refresh(); refreshDisk();
+  }catch(e){ alert('Purge: '+e.message); }
 }
 async function refreshDisk(){
   try{ const d=await api('GET','/api/maintenance/disk-usage');

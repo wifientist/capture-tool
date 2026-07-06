@@ -110,8 +110,41 @@ class SessionService:
             await s.commit()
         return removed
 
+    async def _referenced_files(self) -> set[str]:
+        """Names of capture-dir files still referenced by the DB or an active job."""
+        names: set[str] = set()
+        async with self.db.sessionmaker() as s:
+            for a in (await s.execute(select(Assignment))).scalars().all():
+                if a.file_path:
+                    names.add(Path(a.file_path).name)
+                    names.add(Path(a.file_path).with_suffix(".json").name)
+            for art in (await s.execute(select(Artifact))).scalars().all():
+                if art.file_path:
+                    names.add(Path(art.file_path).name)
+        # protect files owned by in-flight captures (rows may not be written yet)
+        for job in self.engine.list_jobs():
+            if job.state.value in ACTIVE and job.file_path:
+                names.add(job.file_path.name)
+                names.add(job.file_path.with_suffix(".json").name)
+        return names
+
+    async def sweep_orphans(self) -> tuple[int, int]:
+        """Delete capture-dir files not referenced by any session/artifact/active job."""
+        keep = await self._referenced_files()
+        removed = freed = 0
+        for p in self.engine.settings.capture_dir.glob("*"):
+            if p.is_file() and p.name not in keep:
+                try:
+                    freed += p.stat().st_size
+                    p.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        return removed, freed
+
     async def purge_completed(self) -> dict:
-        """Manual bulk purge of all done/failed/cancelled sessions and their files."""
+        """Bulk purge: delete done/failed/cancelled sessions + their files, then
+        sweep any orphaned capture files left behind (deleted sessions, ad-hoc runs)."""
         async with self.db.sessionmaker() as s:
             rows = (await s.execute(select(CaptureSession).where(
                 CaptureSession.status.in_(["done", "failed", "cancelled"])))).scalars().all()
@@ -123,7 +156,9 @@ class SessionService:
                 await s.delete(sess)
                 sessions += 1
             await s.commit()
-        return {"sessions_deleted": sessions, "files_removed": files}
+        orphans, freed = await self.sweep_orphans()
+        return {"sessions_deleted": sessions, "files_removed": files,
+                "orphans_removed": orphans, "orphan_bytes": freed}
 
     def disk_usage(self) -> dict:
         d = self.engine.settings.capture_dir
