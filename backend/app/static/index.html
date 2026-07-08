@@ -164,6 +164,24 @@
 
 <script>
 const RADIOS = [['wifi0','2.4 GHz'],['wifi1','5 GHz'],['wifi2','6 GHz']];
+// SmartZone capture modes (ignored for Ruckus One / direct-SSH targets)
+const CAPTURE_MODES = [
+  ['file','File (controller · remote-safe)'],
+  ['stream_wireshark','Stream → Wireshark (live)'],
+  ['stream_inapp','Stream → in-app counters (live)']];
+const modeOpts = sel => CAPTURE_MODES.map(([v,l])=>`<option value="${v}" ${v===sel?'selected':''}>${l}</option>`).join('');
+const modeLabel = m => ({file:'file',stream_wireshark:'→ Wireshark',stream_inapp:'→ in-app'}[m]||m);
+function modeChanged(){
+  const m=document.getElementById('swMode').value;
+  const row=document.getElementById('swHostRow');
+  if(row) row.style.display = m==='file' ? 'none' : '';
+  // prefill host-IP placeholder from the first selected SmartZone target
+  const sel=[...(document.getElementById('swTargets')?.selectedOptions||[])].map(o=>o.value);
+  const t=TARGETS.find(t=>sel.includes(t.id) && t.controller_platform==='sz' && t.suggested_host_ip);
+  const host=document.getElementById('swHost');
+  if(host) host.placeholder = t?`auto: ${t.suggested_host_ip}`:'auto-detect per AP';
+}
+function copyText(s){ navigator.clipboard?.writeText(s); }
 const DFS_CH = new Set([52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,144]);
 function dfsHint(){
   const el=document.getElementById('dfsHint'); if(!el) return;
@@ -376,20 +394,25 @@ function renderBuild(sess){
     return;
   }
   const rows = (sess?.assignments||[]).map(a=>`<tr>
-     <td>${esc(a.ap_host)}</td><td>${a.iface}</td><td>${a.target_channel??'—'}${a.width_mhz?` / ${a.width_mhz}MHz`:''}</td><td class="muted">${flagsLabel(a.flags)}</td>
+     <td>${esc(a.ap_host)}</td><td>${a.iface}</td><td>${a.target_channel??'—'}${a.width_mhz?` / ${a.width_mhz}MHz`:''}</td>
+     <td class="muted">${modeLabel(a.capture_mode)}</td><td class="muted">${flagsLabel(a.flags)}</td>
      <td class="row-actions"><button class="danger" onclick="removeAssignment('${a.id}')">✕</button></td></tr>`).join('');
   el.innerHTML = `
     <div class="sess-head"><span class="name">${esc(draft.name)}</span>
       <span class="state s-draft">draft</span><code>${draft.id}</code>
       <span class="totals">${(sess?.assignments||[]).length} assignment(s)</span></div>
-    <table><thead><tr><th>AP mgmt IP</th><th>Radio</th><th>Chan / width</th><th>Frames</th><th></th></tr></thead>
-      <tbody>${rows||'<tr><td colspan=5 class=muted>No radios yet — pick APs + channels below.</td></tr>'}</tbody></table>
+    <table><thead><tr><th>AP mgmt IP</th><th>Radio</th><th>Chan / width</th><th>Mode</th><th>Frame types</th><th></th></tr></thead>
+      <tbody>${rows||'<tr><td colspan=6 class=muted>No radios yet — pick APs + channels below.</td></tr>'}</tbody></table>
     <div class="grid" style="margin-top:14px">
       <div style="grid-column:span 2"><label>Target APs (ctrl/⌘-click for several)</label>
-        <select id="swTargets" multiple size="4">${targetMultiOpts()}</select></div>
+        <select id="swTargets" multiple size="4" onchange="modeChanged()">${targetMultiOpts()}</select></div>
       <div><label>Radio</label><select id="swIface" onchange="dfsHint()">${radioOpts('wifi0')}</select></div>
       <div><label>Channels (comma, paired to APs in order)</label><input id="swChans" placeholder="1, 6, 11" oninput="dfsHint()"></div>
       <div><label>Width</label><select id="swWidth">${widthOpts()}</select></div>
+      <div><label>Capture mode <span title="SmartZone only. File = controller download, works remotely, counter finalizes at end. Stream = live, needs the AP reachable on the LAN: → Wireshark hands you an rpcap URL; → in-app shows live counters here." style="cursor:help;color:#2f81f7">ⓘ</span></label>
+        <select id="swMode" onchange="modeChanged()">${modeOpts('file')}</select></div>
+      <div id="swHostRow" style="display:none;grid-column:span 2"><label>Wireshark / capture host IP <span class=muted>(blank = auto-detect per AP)</span></label>
+        <input id="swHost" placeholder="auto-detect per AP"></div>
     </div>
     <div style="margin-top:12px">
       <label>Capture frame types <span onclick="var e=document.getElementById('flagHelp');e.style.display=e.style.display==='none'?'block':'none'" style="cursor:pointer;color:#2f81f7">ⓘ</span></label>
@@ -467,14 +490,16 @@ async function addSweep(){
   const iface=document.getElementById('swIface').value;
   const w=document.getElementById('swWidth').value?Number(document.getElementById('swWidth').value):null;
   const flags=sweepFlags();
+  const mode=document.getElementById('swMode').value;
+  const host=document.getElementById('swHost').value.trim();
   if(!tids.length||!chans.length){ err('pick target APs and channels'); return; }
   // sanity-check every channel against the radio/band/width before submitting
   for(const c of chans){ const e=validateChanWidth(iface,c,w); if(e){ err(e); return; } }
   err('');
   try{
     for(let i=0;i<tids.length;i++){        // each selected AP gets a channel (cycling if fewer)
-      const a={target_id:tids[i],iface,target_channel:chans[i%chans.length]};
-      if(w) a.width_mhz=w; if(flags) a.flags=flags;
+      const a={target_id:tids[i],iface,target_channel:chans[i%chans.length],capture_mode:mode};
+      if(w) a.width_mhz=w; if(flags) a.flags=flags; if(host) a.host_ip=host;
       await api('POST',`/api/sessions/${draft.id}/assignments`,a);
     }
     refreshBuild();
@@ -511,8 +536,12 @@ async function refreshTemplates(){
 // ---- sessions list ----
 function assignmentRow(a){
   const last = a.seconds_since_last_frame==null ? '' : `<span class=muted>${a.seconds_since_last_frame}s ago</span>`;
+  const modeTag = a.capture_mode && a.capture_mode!=='file' ? ` <span class=muted>· ${modeLabel(a.capture_mode)}</span>` : '';
+  // stream_wireshark: no local file/counters — hand the analyst the rpcap URL to open in Wireshark
+  const ws = a.stream_url ? `<br><span class=muted>Wireshark:</span> <code>${esc(a.stream_url)}</code>
+      <button class=secondary style="padding:1px 6px" onclick="copyText('${esc(a.stream_url)}')">copy</button>` : '';
   return `<tr>
-    <td>${esc(a.ap_host)}<br><span class=muted>${a.iface}${a.linktype?` · dlt ${a.linktype}`:''}</span></td>
+    <td>${esc(a.ap_host)}<br><span class=muted>${a.iface}${a.linktype?` · dlt ${a.linktype}`:''}${modeTag}</span>${ws}</td>
     <td>${a.target_channel??'—'}${a.width_mhz?` <span class=muted>/${a.width_mhz}</span>`:''}${a.channel&&a.channel!==a.target_channel?` <span class=muted>(act ${a.channel})</span>`:''}</td>
     <td><span class="state s-${a.status}">${a.status}</span>${a.error?`<br><span class=warn>${esc(a.error).slice(0,50)}</span>`:''}</td>
     <td>${a.frames.toLocaleString()}</td><td>${fmtBytes(a.bytes)}</td>

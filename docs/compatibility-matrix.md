@@ -51,7 +51,7 @@ Radios: dual = 2.4+5 (`wifi0/wifi1` → `RADIO24/RADIO50`); tri = +6 GHz
 
 | Model | Family | Series | Radios | Firmware tested | A | B | C | Notes |
 |-------|:--:|:--:|:--:|-----------------|:--:|:--:|:--:|-------|
-| **R650** | R (indoor) | 600 | dual (2.4/5) | 7.1.1.0.5176 | ✅ | ✅ | ✅ | Reference AP. Monitor iface discovered = `wlan101` (RADIO50) / `wlan100` (RADIO24), radiotap/DLT-127. In-app pulled 217 frames live. |
+| **R650** | R (indoor) | 600 | dual (2.4/5) | 7.1.1.0.5176 | ✅ | ✅ | ✅ | Reference AP. Monitor iface discovered = `wlan101` (RADIO50) / `wlan100` (RADIO24), radiotap/DLT-127. All 3 modes proven **through the app**: in-app live counters→265, Wireshark URL exposed, file 208 frames. |
 | **T350SE** | T (outdoor) | 300 | dual (2.4/5) | 7.1.1.0.5176 | 🟡 | 🟡 | 🟡 | Present in fleet; **streaming not yet exercised** — verify rpcap reachability outdoors + monitor-iface discovery. |
 | _R760 / R770-class_ | R (indoor) | 700 | **tri (+6 GHz)** | — | 🟡 | 🟡 | 🟡 | **RADIO60 path unexercised.** Confirm `wifi2`/6 GHz monitor iface appears + DFS/6E channel behavior. |
 | _H-series_ | H (wall) | — | dual/tri | — | 🟡 | 🟡 | 🟡 | Untested form factor. |
