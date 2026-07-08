@@ -33,12 +33,17 @@ def _iso(ts: float) -> str:
 _IFACE_RADIO = {"wifi0": "RADIO24", "wifi1": "RADIO50", "wifi2": "RADIO60"}
 
 
-def _sz_frame_types(flags: str) -> list[str] | None:
-    """Map our -no* exclusion flags to SZ includedFrameTypes (None = all)."""
+def _sz_frame_types(flags: str) -> list[str]:
+    """Map our -no* exclusion flags to SZ includedFrameTypes.
+
+    CRITICAL: SZ apPacketCapture captures NOTHING when includedFrameTypes is
+    omitted/empty (the field is "include these", not "default = all"). So we
+    always send an explicit list — with no exclusions that's all three types,
+    which is what makes beacons/probes (MANAGEMENT) actually show up.
+    """
     ex = flags.replace("-no", "")
-    types = [t for t, k in (("MANAGEMENT", "m"), ("CONTROL", "c"), ("DATA", "d"))
-             if k not in ex]
-    return types if len(types) < 3 else None
+    return [t for t, k in (("MANAGEMENT", "m"), ("CONTROL", "c"), ("DATA", "d"))
+            if k not in ex]
 
 
 def _extract_sz_pcap(data: bytes) -> bytes:
@@ -241,6 +246,13 @@ class Engine:
                 job._t0 = time.monotonic()
                 job.started_at = _iso(time.time())
                 job.stats.last_data_monotonic = time.monotonic()
+                # SZ has a single capture engine per AP; a prior run may have left
+                # it "running"/"file ready", which makes a fresh start misbehave.
+                # Clear it best-effort before starting ours.
+                try:
+                    await ad.stop_capture(sz["ap_mac"])
+                except Exception:
+                    pass
                 await ad.start_file_capture(sz["ap_mac"], radio,
                                             frame_types=_sz_frame_types(job.flags))
                 job.state = CaptureState.capturing
