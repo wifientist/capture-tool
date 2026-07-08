@@ -180,6 +180,9 @@ class ApInventoryOut(BaseModel):
 class ImportRequest(BaseModel):
     venue_id: str
     serials: list[str] = Field(min_length=1)
+    ssh_password: str | None = Field(
+        default=None, description="applied to imported APs when the controller has no "
+                                  "per-AP password API (e.g. SmartZone static/shared login)")
 
 
 class ArtifactOut(BaseModel):

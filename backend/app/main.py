@@ -119,7 +119,8 @@ async def controller_venue_aps(cid: str, venue_id: str) -> list[ApInventoryOut]:
 @app.post("/api/controllers/{cid}/import", response_model=list[TargetOut])
 async def import_targets(cid: str, body: ImportRequest) -> list[TargetOut]:
     try:
-        return await app.state.service.import_targets(cid, body.venue_id, body.serials)
+        return await app.state.service.import_targets(
+            cid, body.venue_id, body.serials, body.ssh_password)
     except KeyError:
         raise HTTPException(404, "unknown controller")
     except ValueError as e:

@@ -70,7 +70,7 @@
   <div class="card">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
       <div style="font-size:12px;color:#8b98a5">Controllers authenticate to R1/SZ (API creds). Targets are the APs you capture from — import them from R1 or add manually.</div>
-      <button style="margin-left:auto" onclick="openImport()">⬇ Import AP from R1</button>
+      <button style="margin-left:auto" onclick="openImport()">⬇ Import APs from controller</button>
     </div>
     <div id="controllers"></div>
     <details style="margin-top:6px"><summary style="cursor:pointer;color:#8b98a5">+ add controller</summary>
@@ -142,11 +142,15 @@
 
 <div id="importModal" class="modal-bg" style="display:none">
   <div class="modal">
-    <div class="sess-head"><span class="name">Import APs from R1</span>
+    <div class="sess-head"><span class="name">Import APs from controller</span>
       <button class="secondary" style="margin-left:auto" onclick="closeImport()">✕</button></div>
     <div class="grid" style="margin-top:12px">
       <div><label>Controller</label><select id="imCtrl" onchange="imLoadVenues()"></select></div>
-      <div><label>Venue</label><select id="imVenue" onchange="imLoadAps()"><option value="">—</option></select></div>
+      <div><label id="imScopeLbl">Venue / Zone</label><select id="imVenue" onchange="imLoadAps()"><option value="">—</option></select></div>
+    </div>
+    <div id="imPwRow" style="margin-top:10px;display:none">
+      <label>AP CLI password (SmartZone — static, applied to imported APs)</label>
+      <input id="imPw" type="password" placeholder="AP admin password" style="max-width:320px">
     </div>
     <div id="imStatus" class="muted" style="margin:10px 0;min-height:16px"></div>
     <div id="imAps" style="max-height:320px;overflow:auto;border:1px solid #222b36;border-radius:8px"></div>
@@ -286,26 +290,34 @@ function tgtRow(t){ return `<tr><td>${esc(t.name)}</td><td>${t.host}</td><td cla
   <td>${t.has_stored_password?`🔑 ${esc(t.ssh_username_effective)}`:'<span class=muted>env fallback</span>'}</td>
   <td class="row-actions"><button class="secondary" onclick="editTarget('${t.id}')">edit</button>
     <button class="danger" onclick="delTarget('${t.id}')">✕</button></td></tr>`; }
-// ---- import from R1 modal ----
+// ---- import from controller (R1 or SZ) modal ----
+function imCtrlPlatform(){ const cid=document.getElementById('imCtrl').value; return (CONTROLLERS.find(c=>c.id===cid)||{}).platform; }
+function imSyncPlatformUI(){
+  const sz = imCtrlPlatform()==='sz';
+  document.getElementById('imScopeLbl').textContent = sz?'Zone':'Venue';
+  document.getElementById('imPwRow').style.display = sz?'block':'none';   // SZ needs a static pw
+}
 function openImport(){
-  const r1=CONTROLLERS.filter(c=>c.platform==='r1');
-  if(!r1.length){ alert('Add a Ruckus One controller first (with tenant ID + API creds).'); return; }
-  document.getElementById('imCtrl').innerHTML=r1.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  const ctrls=CONTROLLERS.filter(c=>['r1','sz'].includes(c.platform));
+  if(!ctrls.length){ alert('Add a Ruckus One or SmartZone controller first.'); return; }
+  document.getElementById('imCtrl').innerHTML=ctrls.map(c=>`<option value="${c.id}">${esc(c.name)} · ${c.platform.toUpperCase()}</option>`).join('');
   document.getElementById('imVenue').innerHTML='<option value="">—</option>';
   document.getElementById('imAps').innerHTML=''; document.getElementById('imErr').textContent='';
-  document.getElementById('imBtn').disabled=true;
+  document.getElementById('imPw').value=''; document.getElementById('imBtn').disabled=true;
   document.getElementById('importModal').style.display='flex';
-  imLoadVenues();
+  imSyncPlatformUI(); imLoadVenues();
 }
 function closeImport(){ document.getElementById('importModal').style.display='none'; }
 const imStatus = m => document.getElementById('imStatus').textContent = m||'';
 async function imLoadVenues(){
+  imSyncPlatformUI();
   const cid=document.getElementById('imCtrl').value; if(!cid) return;
-  imStatus('loading venues…'); document.getElementById('imAps').innerHTML='';
+  const scope = imCtrlPlatform()==='sz'?'zone':'venue';
+  imStatus(`loading ${scope}s…`); document.getElementById('imAps').innerHTML='';
   try{
     const vs=await api('GET',`/api/controllers/${cid}/venues`);
-    document.getElementById('imVenue').innerHTML='<option value="">— select venue —</option>'+vs.map(v=>`<option value="${v.external_id}">${esc(v.name)}</option>`).join('');
-    imStatus(vs.length?`${vs.length} venue(s)`:'no venues');
+    document.getElementById('imVenue').innerHTML=`<option value="">— select ${scope} —</option>`+vs.map(v=>`<option value="${v.external_id}">${esc(v.name)}</option>`).join('');
+    imStatus(vs.length?`${vs.length} ${scope}(s)`:`no ${scope}s`);
   }catch(e){ imStatus(''); document.getElementById('imErr').textContent=e.message; }
 }
 async function imLoadAps(){
@@ -331,10 +343,13 @@ function imSelectAll(){ document.querySelectorAll('.imChk:not(:disabled)').forEa
 async function doImport(){
   const cid=document.getElementById('imCtrl').value, vid=document.getElementById('imVenue').value, serials=imSelected();
   if(!serials.length) return;
-  document.getElementById('imErr').textContent=''; imStatus('importing (fetching per-AP passwords)…');
+  const sz=imCtrlPlatform()==='sz', pw=document.getElementById('imPw').value;
+  const body={venue_id:vid,serials}; if(sz && pw) body.ssh_password=pw;
+  document.getElementById('imErr').textContent='';
+  imStatus(sz?'importing…':'importing (fetching per-AP passwords from R1)…');
   document.getElementById('imBtn').disabled=true;
   try{
-    const r=await api('POST',`/api/controllers/${cid}/import`,{venue_id:vid,serials});
+    const r=await api('POST',`/api/controllers/${cid}/import`,body);
     imStatus(`imported ${r.length} AP(s)`); await refreshInventory(); closeImport();
   }catch(e){ imStatus(''); document.getElementById('imErr').textContent=e.message; document.getElementById('imBtn').disabled=false; }
 }

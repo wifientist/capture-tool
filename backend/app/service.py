@@ -573,11 +573,14 @@ class SessionService:
 
     # -- controller inventory sync (R1) ---------------------------------------
     def _adapter_for(self, c: Controller):
-        if c.platform != "r1":
-            raise ValueError(f"{c.platform.upper()} inventory sync not implemented yet")
-        from .adapters.ruckus_one import RuckusOneAdapter
-        return RuckusOneAdapter(c.api_client_id, c.api_client_secret, c.tenant_id,
-                                region=c.region, base_url=c.base_url)
+        if c.platform == "r1":
+            from .adapters.ruckus_one import RuckusOneAdapter
+            return RuckusOneAdapter(c.api_client_id, c.api_client_secret, c.tenant_id,
+                                    region=c.region, base_url=c.base_url)
+        if c.platform == "sz":
+            from .adapters.smartzone import SmartZoneAdapter
+            return SmartZoneAdapter(c.base_url, c.api_username, c.api_password, c.api_version)
+        raise ValueError(f"{c.platform.upper()} inventory not supported")
 
     async def _load_controller(self, cid: str) -> Controller:
         async with self.db.sessionmaker() as s:
@@ -611,22 +614,26 @@ class SessionService:
                                venue_id=a.venue_id, already_target=a.serial in have)
                 for a in aps]
 
-    async def import_targets(self, cid: str, venue_id: str,
-                             serials: list[str]) -> list[TargetOut]:
-        """Pull AP details + per-AP CLI password from R1, upsert as targets
-        (SSH user 'admin', password from getApPassword)."""
+    async def import_targets(self, cid: str, venue_id: str, serials: list[str],
+                             ssh_password: str | None = None) -> list[TargetOut]:
+        """Pull AP details from the controller and upsert as targets (SSH user
+        'admin'). R1: per-AP CLI password fetched from the API. SZ: no password
+        API — use the supplied static/shared password (or leave for manual entry)."""
         c = await self._load_controller(cid)
         ad = self._adapter_for(c)
         fetched = []
         try:
+            by_serial = {a.serial: a for a in await ad.list_aps(venue_id)}
             for serial in serials:
-                ap = await ad.get_ap(serial)
+                ap = by_serial.get(serial)
+                if not ap:
+                    continue
                 pw = None
                 try:
                     pw = (await ad.get_ap_password(venue_id, serial)).password
                 except Exception:
-                    pw = None   # password not retrievable; import without it
-                fetched.append((ap, pw))
+                    pw = None   # no per-AP password API (SZ) or fetch failed
+                fetched.append((ap, pw or ssh_password))
         finally:
             await ad.aclose()
 
