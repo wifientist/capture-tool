@@ -101,14 +101,21 @@ class TargetOut(BaseModel):
     name: str
     host: str
     model: str | None
+    firmware: str | None = None
     serial: str | None
     controller_id: str | None
     controller_name: str | None
+    controller_platform: str | None = None   # r1 | sz — drives capture-mode UI
+    suggested_host_ip: str | None = None      # tool host IP reachable from this AP
     ssh_username: str | None         # raw per-AP override (for edit prefill)
     ssh_username_effective: str      # resolved override -> env default
     has_stored_password: bool        # a password stored on the target (else env fallback)
     notes: str | None
     created_at: str
+
+
+# SmartZone capture modes; ssh backend / R1 ignore this and use rkscli+rpcap.
+CAPTURE_MODES = ("file", "stream_wireshark", "stream_inapp")
 
 
 class AssignmentCreate(BaseModel):
@@ -117,6 +124,8 @@ class AssignmentCreate(BaseModel):
     target_channel: int | None = Field(default=None, description="pinned via CLI before capture")
     width_mhz: int | None = Field(default=None, description="20/40/80/160; null = AP default")
     flags: str = Field(default="", description="rkscli capture flags, e.g. -nob")
+    capture_mode: str = Field(default="file", description="SZ: file | stream_wireshark | stream_inapp")
+    host_ip: str | None = Field(default=None, description="Wireshark/tool host IP for streaming modes")
 
 
 class SessionCreate(BaseModel):
@@ -136,6 +145,7 @@ class AssignmentOut(BaseModel):
     target_channel: int | None
     width_mhz: int | None = None
     flags: str
+    capture_mode: str = "file"
     status: str
     channel: int | None
     linktype: int | None
@@ -148,6 +158,7 @@ class AssignmentOut(BaseModel):
     # live overlay (present only while running in-process)
     elapsed_s: float | None = None
     seconds_since_last_frame: float | None = None
+    stream_url: str | None = None    # rpcap:// URL for Wireshark (stream_wireshark mode)
 
 
 class SessionTotals(BaseModel):

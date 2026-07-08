@@ -35,6 +35,9 @@ class CaptureSpec(BaseModel):
     sz_password: str | None = None
     sz_version: str | None = None
     sz_ap_mac: str | None = None
+    # SmartZone capture mode: "file" | "stream_wireshark" | "stream_inapp"
+    sz_capture_mode: str = "file"
+    sz_host_ip: str | None = None   # Wireshark/tool host IP for streaming modes
 
 
 class CaptureStatus(BaseModel):
@@ -54,3 +57,5 @@ class CaptureStatus(BaseModel):
     ended_at: str | None = None
     error: str | None = None
     has_file: bool = False
+    # streaming modes: rpcap URL for the analyst's Wireshark (stream_wireshark)
+    stream_url: str | None = None

@@ -52,6 +52,7 @@ class Target(Base):
     host: Mapped[str] = mapped_column(String(64))            # mgmt IP
     mac: Mapped[str | None] = mapped_column(String(32), default=None)   # AP MAC (SZ API keys by MAC)
     model: Mapped[str | None] = mapped_column(String(40), default=None)
+    firmware: Mapped[str | None] = mapped_column(String(40), default=None)  # for the compat matrix
     serial: Mapped[str | None] = mapped_column(String(64), default=None)
     controller_id: Mapped[str | None] = mapped_column(
         ForeignKey("controllers.id", ondelete="SET NULL"), default=None)
@@ -94,6 +95,9 @@ class Assignment(Base):
     target_channel: Mapped[int | None] = mapped_column(default=None)
     width_mhz: Mapped[int | None] = mapped_column(default=None)   # 20/40/80/160; null=AP default
     flags: Mapped[str] = mapped_column(String(32), default="")
+    # SmartZone capture mode: file | stream_wireshark | stream_inapp (ssh backend ignores)
+    capture_mode: Mapped[str] = mapped_column(String(20), default="file")
+    host_ip: Mapped[str | None] = mapped_column(String(64), default=None)  # Wireshark/tool host for streaming
 
     # pending|configuring|capturing|finalizing|done|failed|cancelled
     status: Mapped[str] = mapped_column(String(20), default="pending")

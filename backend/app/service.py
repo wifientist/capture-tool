@@ -62,7 +62,8 @@ class SessionService:
             aid = uuid.uuid4().hex[:12]
             s.add(Assignment(id=aid, session_id=sid, target_id=target.id, ap_host=target.host,
                              iface=spec.iface, target_channel=spec.target_channel,
-                             width_mhz=spec.width_mhz, flags=spec.flags))
+                             width_mhz=spec.width_mhz, flags=spec.flags,
+                             capture_mode=spec.capture_mode or "file", host_ip=spec.host_ip))
             await s.commit()
         return aid
 
@@ -201,11 +202,18 @@ class SessionService:
                                   duration_s=duration_s, target_channel=a.target_channel,
                                   width_mhz=a.width_mhz)
                     if ctrl and ctrl.platform == "sz" and target and target.mac:
-                        # SmartZone -> Track A (controller-mediated capture, no AP SSH)
+                        # SmartZone -> Track A (controller-mediated capture, no AP SSH).
+                        # Streaming modes need a host IP the AP can reach; default to
+                        # the tool host on the AP's subnet when the user didn't set one.
+                        mode = a.capture_mode or "file"
+                        host_ip = a.host_ip
+                        if mode != "file" and not host_ip:
+                            host_ip = self.engine.settings.local_ip_for(a.ap_host)
                         spec = CaptureSpec(**common, backend="sz_api",
                                            sz_base_url=ctrl.base_url, sz_username=ctrl.api_username,
                                            sz_password=ctrl.api_password, sz_version=ctrl.api_version,
-                                           sz_ap_mac=target.mac)
+                                           sz_ap_mac=target.mac, sz_capture_mode=mode,
+                                           sz_host_ip=host_ip)
                     else:
                         if target:
                             await self._refresh_target_password(s, target, adapters)
@@ -322,7 +330,7 @@ class SessionService:
         job = self.engine.get(a.id)
         status, frames, byts = a.status, a.frames, a.bytes
         channel, linktype, error = a.channel, a.linktype, a.error
-        elapsed = since = None
+        elapsed = since = stream_url = None
         has_file = bool(a.file_path and Path(a.file_path).exists())
         if job is not None:
             st = job.status()
@@ -330,15 +338,16 @@ class SessionService:
             channel = st.channel if st.channel is not None else channel
             linktype = st.linktype if st.linktype is not None else linktype
             error, elapsed, since = st.error, st.elapsed_s, st.seconds_since_last_frame
+            stream_url = st.stream_url
             if job.file_path and job.file_path.exists():
                 has_file = True
         return AssignmentOut(
             id=a.id, ap_host=a.ap_host, target_id=a.target_id, iface=a.iface,
             target_channel=a.target_channel, width_mhz=a.width_mhz,
-            flags=a.flags, status=status, channel=channel, linktype=linktype,
-            frames=frames, bytes=byts, has_file=has_file, error=error,
+            flags=a.flags, capture_mode=a.capture_mode, status=status, channel=channel,
+            linktype=linktype, frames=frames, bytes=byts, has_file=has_file, error=error,
             started_at=a.started_at, ended_at=a.ended_at,
-            elapsed_s=elapsed, seconds_since_last_frame=since)
+            elapsed_s=elapsed, seconds_since_last_frame=since, stream_url=stream_url)
 
     def _session_out(self, sess: CaptureSession, artifacts: list[Artifact] = ()) -> SessionOut:
         outs = [self._assignment_out(a) for a in sess.assignments]
@@ -540,9 +549,18 @@ class SessionService:
 
     def _target_out(self, t: Target, ctrl: Controller | None) -> TargetOut:
         effective = t.ssh_username or self.engine.settings.ap_username
+        suggested_host_ip = None
+        if ctrl and ctrl.platform == "sz":
+            try:
+                suggested_host_ip = self.engine.settings.local_ip_for(t.host)
+            except Exception:
+                suggested_host_ip = None
         return TargetOut(
-            id=t.id, name=t.name, host=t.host, model=t.model, serial=t.serial,
-            controller_id=t.controller_id, controller_name=ctrl.name if ctrl else None,
+            id=t.id, name=t.name, host=t.host, model=t.model, firmware=t.firmware,
+            serial=t.serial, controller_id=t.controller_id,
+            controller_name=ctrl.name if ctrl else None,
+            controller_platform=ctrl.platform if ctrl else None,
+            suggested_host_ip=suggested_host_ip,
             ssh_username=t.ssh_username, ssh_username_effective=effective,
             has_stored_password=bool(t.ssh_password),
             notes=t.notes, created_at=t.created_at)
@@ -658,6 +676,7 @@ class SessionService:
                 t.host = ap.ip or t.host or ""
                 t.mac = ap.mac
                 t.model = ap.model
+                t.firmware = ap.firmware   # feeds the capture compatibility matrix
                 t.venue_id = ap.venue_id or venue_id   # for later password refresh / SZ capture
                 t.ssh_username = "admin"
                 if pw:

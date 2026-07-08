@@ -21,8 +21,10 @@ from pathlib import Path
 
 # rpcap message types
 _AUTH_REQ, _OPEN_REQ, _STARTCAP_REQ = 8, 3, 4
+_FINDALLIF_REQ, _CLOSE_REQ = 2, 6
 _ERROR = 1
 _PKT_TYPES = (0x07, 0x87)  # this rpcapd tags data packets 0x07
+DLT_RADIOTAP = 127         # SmartZone streaming monitor taps present as radiotap
 
 
 def _reply(t: int) -> int:
@@ -50,6 +52,107 @@ class CaptureStats:
 
 class RpcapError(Exception):
     pass
+
+
+# -- monitor-interface discovery (SmartZone streaming) -----------------------
+# After `startStreaming`, the streamed radio's monitor tap is the only interface
+# presenting radiotap (DLT 127). We find it by name-agnostic probing so we never
+# depend on model/firmware-specific interface names (wlan100/101/102 vary by
+# platform). See docs/compatibility-matrix.md.
+
+def _rp_recvn(sock: socket.socket, n: int) -> bytes:
+    buf = b""
+    while len(buf) < n:
+        c = sock.recv(n - len(buf))
+        if not c:
+            raise RpcapError(f"peer closed ({len(buf)}/{n})")
+        buf += c
+    return buf
+
+
+def _rp_read(sock: socket.socket) -> tuple[int, int, bytes]:
+    _ver, mtype, value, plen = struct.unpack("!BBHI", _rp_recvn(sock, 8))
+    return mtype, value, (_rp_recvn(sock, plen) if plen else b"")
+
+
+def _rp_auth(sock: socket.socket) -> None:
+    sock.sendall(struct.pack("!BBHI", 0, _AUTH_REQ, 0, 8) + struct.pack("!HHHH", 0, 0, 0, 0))
+    _rp_read(sock)
+
+
+def _rp_findallif(host: str, port: int, timeout: float) -> list[str]:
+    s = socket.create_connection((host, port), timeout=timeout)
+    s.settimeout(timeout)
+    try:
+        _rp_auth(s)
+        s.sendall(struct.pack("!BBHI", 0, _FINDALLIF_REQ, 0, 0))
+        mtype, nif, body = _rp_read(s)
+    finally:
+        s.close()
+    if mtype != _reply(_FINDALLIF_REQ):
+        return []
+    names: list[str] = []
+    off = 0
+    for _ in range(nif):
+        if off + 12 > len(body):
+            break
+        namelen, desclen, _flags, naddr, _dummy = struct.unpack("!HHIHH", body[off:off + 12])
+        off += 12
+        name = body[off:off + namelen].decode(errors="replace"); off += namelen
+        off += desclen
+        off += naddr * 128 * 4  # 4 sockaddr_storage (128B each) per address entry
+        if name and all(32 <= ord(c) < 127 for c in name):
+            names.append(name)
+    return names
+
+
+def _rp_linktype(host: str, port: int, iface: str, timeout: float) -> int | None:
+    """OPEN the interface (no StartCapture) just to read its DLT; None on error."""
+    s = socket.create_connection((host, port), timeout=timeout)
+    s.settimeout(timeout)
+    try:
+        _rp_auth(s)
+        s.sendall(struct.pack("!BBHI", 0, _OPEN_REQ, 0, len(iface)) + iface.encode())
+        mtype, _v, body = _rp_read(s)
+        if mtype != _reply(_OPEN_REQ) or len(body) < 4:
+            return None
+        lt = struct.unpack("!i", body[:4])[0]
+        try:
+            s.sendall(struct.pack("!BBHI", 0, _CLOSE_REQ, 0, 0))
+        except OSError:
+            pass
+        return lt
+    finally:
+        s.close()
+
+
+def discover_monitor_iface(host: str, port: int = 2002, timeout: float = 6.0) -> str | None:
+    """Find the radiotap (DLT 127) monitor interface exposed after startStreaming.
+
+    Name-agnostic: probes the AP's rpcap interfaces and returns the one reporting
+    radiotap. Only the currently-streamed radio's tap exists, so this returns the
+    correct interface regardless of which radio/model without a hardcoded map.
+    Known Ruckus names (wlan100/101/102) are tried first for speed.
+    """
+    try:
+        found = _rp_findallif(host, port, timeout)
+    except (OSError, RpcapError):
+        found = []
+    # known monitor-tap names first, then discovered wlan*/mon* devices
+    ordered: list[str] = []
+    for n in ["wlan100", "wlan101", "wlan102", *found]:
+        if n not in ordered:
+            ordered.append(n)
+    for name in ordered:
+        if name.startswith(("eth", "br", "lo", "bond", "dummy", "tif", "cdif", "any",
+                            "nflog", "nfqueue", "soc", "miireg", "wifi")):
+            continue
+        try:
+            if _rp_linktype(host, port, name, timeout) == DLT_RADIOTAP:
+                return name
+        except (OSError, RpcapError):
+            continue
+    return None
 
 
 class RpcapReader:
