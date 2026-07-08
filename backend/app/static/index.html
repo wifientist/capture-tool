@@ -51,6 +51,17 @@
   .aprow:hover { background: #1c2230; }
   .aprow.taken { opacity: .55; }
   .aprow .meta { color: #8b98a5; font-size: 12px; }
+  .modeRow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .modeCard { text-align: left; background: #0e1116; border: 1px solid #2b3540; border-radius: 10px;
+              padding: 14px; cursor: pointer; color: #e6edf3; font: inherit; display: flex; flex-direction: column; gap: 6px; }
+  .modeCard:hover { border-color: #3d4a5c; background: #11161d; }
+  .modeCard.sel { border-color: #2f81f7; background: #10203a; box-shadow: 0 0 0 1px #2f81f7 inset; }
+  .modeCard .mc-title { font-weight: 700; font-size: 14px; }
+  .modeCard .mc-when { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: #6cb6ff; }
+  .modeCard .mc-live { color: #4ac26b; }
+  .modeCard .mc-desc { font-size: 12px; color: #adbac7; line-height: 1.45; }
+  .modeCard .mc-note { font-size: 11px; color: #8b98a5; line-height: 1.4; }
+  @media (max-width: 720px) { .modeRow { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -164,17 +175,41 @@
 
 <script>
 const RADIOS = [['wifi0','2.4 GHz'],['wifi1','5 GHz'],['wifi2','6 GHz']];
-// SmartZone capture modes (ignored for Ruckus One / direct-SSH targets)
-const CAPTURE_MODES = [
-  ['file','File (controller · remote-safe)'],
-  ['stream_wireshark','Stream → Wireshark (live)'],
-  ['stream_inapp','Stream → in-app counters (live)']];
-const modeOpts = sel => CAPTURE_MODES.map(([v,l])=>`<option value="${v}" ${v===sel?'selected':''}>${l}</option>`).join('');
+// SmartZone capture modes (ignored for Ruckus One / direct-SSH targets, which
+// always stream live over rpcap). Presented as three large cards in the builder.
+let captureMode = 'file';
 const modeLabel = m => ({file:'file',stream_wireshark:'→ Wireshark',stream_inapp:'→ in-app'}[m]||m);
+const MODE_CARDS = [
+  {m:'stream_inapp', title:'Stream → in-app', live:true,
+   when:'App is ON the AP’s LAN',
+   desc:'The AP streams frames straight into this tool. Live frame/byte counters right here, and the pcap is saved for you — the same live experience as the direct-SSH path.',
+   note:'Needs this server to reach the AP on TCP 2002 (same LAN or routable, no NAT).'},
+  {m:'file', title:'File on the AP', live:false,
+   when:'App is REMOTE from the LAN',
+   desc:'The AP records to a file on itself; we pull it back through the SmartZone API when the capture ends. Works anywhere the controller API is reachable — across NAT / the internet.',
+   note:'No live counter — the frame total appears once the capture finishes and downloads.'},
+  {m:'stream_wireshark', title:'Stream → Wireshark', live:true,
+   when:'REMOTE, but Wireshark is on the LAN',
+   desc:'We switch on the AP stream and hand you an rpcap:// URL. Open it in a Wireshark running near the AP for full live, interactive analysis.',
+   note:'Extra setup: the Wireshark host must reach the AP on TCP 2002. Open via Wireshark → Capture Options → Manage Interfaces → Remote, or run  wireshark -i rpcap://…'}
+];
+function modeCards(){
+  return '<div class="modeRow">'+MODE_CARDS.map(c=>`
+    <button type="button" class="modeCard ${c.m===captureMode?'sel':''}" data-mode="${c.m}" onclick="pickMode('${c.m}')">
+      <span class="mc-when ${c.live?'mc-live':''}">${c.live?'● LIVE · ':''}${c.when}</span>
+      <span class="mc-title">${c.title}</span>
+      <span class="mc-desc">${c.desc}</span>
+      <span class="mc-note">${c.note}</span>
+    </button>`).join('')+'</div>';
+}
+function pickMode(m){
+  captureMode=m;
+  document.querySelectorAll('.modeCard').forEach(c=>c.classList.toggle('sel', c.dataset.mode===m));
+  modeChanged();
+}
 function modeChanged(){
-  const m=document.getElementById('swMode').value;
   const row=document.getElementById('swHostRow');
-  if(row) row.style.display = m==='file' ? 'none' : '';
+  if(row) row.style.display = captureMode==='file' ? 'none' : 'block';
   // prefill host-IP placeholder from the first selected SmartZone target
   const sel=[...(document.getElementById('swTargets')?.selectedOptions||[])].map(o=>o.value);
   const t=TARGETS.find(t=>sel.includes(t.id) && t.controller_platform==='sz' && t.suggested_host_ip);
@@ -401,18 +436,22 @@ function renderBuild(sess){
     <div class="sess-head"><span class="name">${esc(draft.name)}</span>
       <span class="state s-draft">draft</span><code>${draft.id}</code>
       <span class="totals">${(sess?.assignments||[]).length} assignment(s)</span></div>
-    <table><thead><tr><th>AP mgmt IP</th><th>Radio</th><th>Chan / width</th><th>Mode</th><th>Frame types</th><th></th></tr></thead>
-      <tbody>${rows||'<tr><td colspan=6 class=muted>No radios yet — pick APs + channels below.</td></tr>'}</tbody></table>
-    <div class="grid" style="margin-top:14px">
+
+    <label style="margin-top:6px">1 · Capture mode <span class=muted>— how frames get from the AP to you (SmartZone APs; Ruckus One / direct-SSH always stream live)</span></label>
+    ${modeCards()}
+    <div id="swHostRow" style="display:${captureMode==='file'?'none':'block'};margin-top:10px;max-width:440px">
+      <label>Wireshark / capture host IP <span class=muted>(blank = auto-detect per AP)</span></label>
+      <input id="swHost" placeholder="auto-detect per AP"></div>
+
+    <hr style="border-color:#222b36;margin:16px 0">
+
+    <label>2 · Pick APs, radio &amp; channels</label>
+    <div class="grid" style="margin-top:4px">
       <div style="grid-column:span 2"><label>Target APs (ctrl/⌘-click for several)</label>
         <select id="swTargets" multiple size="4" onchange="modeChanged()">${targetMultiOpts()}</select></div>
       <div><label>Radio</label><select id="swIface" onchange="dfsHint()">${radioOpts('wifi0')}</select></div>
       <div><label>Channels (comma, paired to APs in order)</label><input id="swChans" placeholder="1, 6, 11" oninput="dfsHint()"></div>
       <div><label>Width</label><select id="swWidth">${widthOpts()}</select></div>
-      <div><label>Capture mode <span title="SmartZone only. File = controller download, works remotely, counter finalizes at end. Stream = live, needs the AP reachable on the LAN: → Wireshark hands you an rpcap URL; → in-app shows live counters here." style="cursor:help;color:#2f81f7">ⓘ</span></label>
-        <select id="swMode" onchange="modeChanged()">${modeOpts('file')}</select></div>
-      <div id="swHostRow" style="display:none;grid-column:span 2"><label>Wireshark / capture host IP <span class=muted>(blank = auto-detect per AP)</span></label>
-        <input id="swHost" placeholder="auto-detect per AP"></div>
     </div>
     <div style="margin-top:12px">
       <label>Capture frame types <span onclick="var e=document.getElementById('flagHelp');e.style.display=e.style.display==='none'?'block':'none'" style="cursor:pointer;color:#2f81f7">ⓘ</span></label>
@@ -432,12 +471,20 @@ function renderBuild(sess){
     </div>
     <div id="dfsHint" class="warn" style="margin-top:6px"></div>
     <div style="margin-top:10px"><button class="secondary" onclick="addSweep()">+ Add radios to session</button></div>
+
+    <hr style="border-color:#222b36;margin:16px 0">
+
+    <label>3 · Selected radios for this session</label>
+    <table style="margin-top:4px"><thead><tr><th>AP mgmt IP</th><th>Radio</th><th>Chan / width</th><th>Mode</th><th>Frame types</th><th></th></tr></thead>
+      <tbody>${rows||'<tr><td colspan=6 class=muted>No radios yet — set the mode, pick APs + channels above, then “Add radios to session”.</td></tr>'}</tbody></table>
+
     <hr style="border-color:#222b36;margin:16px 0">
     <div class="chips">
       <div><label>Duration (s, blank = 2 min default)</label><input id="dur" type="number" min="1" placeholder="120" style="width:180px"></div>
       <button onclick="startSession()" ${(sess?.assignments||[]).length?'':'disabled'}>Start session</button>
       <button class="secondary" onclick="newDraft()">New session</button>
     </div>`;
+  modeChanged();
 }
 async function refreshBuild(){ if(!draft){ renderBuild(); return; } try{ renderBuild(await api('GET','/api/sessions/'+draft.id)); }catch{ draft=null; renderBuild(); } }
 
@@ -490,7 +537,7 @@ async function addSweep(){
   const iface=document.getElementById('swIface').value;
   const w=document.getElementById('swWidth').value?Number(document.getElementById('swWidth').value):null;
   const flags=sweepFlags();
-  const mode=document.getElementById('swMode').value;
+  const mode=captureMode;
   const host=document.getElementById('swHost').value.trim();
   if(!tids.length||!chans.length){ err('pick target APs and channels'); return; }
   // sanity-check every channel against the radio/band/width before submitting
