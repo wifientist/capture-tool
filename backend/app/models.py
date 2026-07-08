@@ -28,6 +28,13 @@ class CaptureSpec(BaseModel):
     # per-capture SSH creds (resolved from target/controller); fall back to settings if None
     ssh_username: str | None = None
     ssh_password: str | None = None
+    # capture backend: "ssh" (rkscli+rpcap) or "sz_api" (SmartZone controller capture)
+    backend: str = "ssh"
+    sz_base_url: str | None = None
+    sz_username: str | None = None
+    sz_password: str | None = None
+    sz_version: str | None = None
+    sz_ap_mac: str | None = None
 
 
 class CaptureStatus(BaseModel):

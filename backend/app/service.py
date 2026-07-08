@@ -195,14 +195,23 @@ class SessionService:
                     a.error = a.started_at = a.ended_at = None
                     a.frames = a.bytes = 0
                     target = await s.get(Target, a.target_id) if a.target_id else None
-                    if target:
-                        await self._refresh_target_password(s, target, adapters)
-                    user, pw = self._resolve_ssh(target)
-                    specs.append((a.id, CaptureSpec(ap_host=a.ap_host, iface=a.iface,
-                                                    flags=a.flags, duration_s=duration_s,
-                                                    target_channel=a.target_channel,
-                                                    width_mhz=a.width_mhz,
-                                                    ssh_username=user, ssh_password=pw)))
+                    ctrl = (await s.get(Controller, target.controller_id)
+                            if target and target.controller_id else None)
+                    common = dict(ap_host=a.ap_host, iface=a.iface, flags=a.flags,
+                                  duration_s=duration_s, target_channel=a.target_channel,
+                                  width_mhz=a.width_mhz)
+                    if ctrl and ctrl.platform == "sz" and target and target.mac:
+                        # SmartZone -> Track A (controller-mediated capture, no AP SSH)
+                        spec = CaptureSpec(**common, backend="sz_api",
+                                           sz_base_url=ctrl.base_url, sz_username=ctrl.api_username,
+                                           sz_password=ctrl.api_password, sz_version=ctrl.api_version,
+                                           sz_ap_mac=target.mac)
+                    else:
+                        if target:
+                            await self._refresh_target_password(s, target, adapters)
+                        user, pw = self._resolve_ssh(target)
+                        spec = CaptureSpec(**common, ssh_username=user, ssh_password=pw)
+                    specs.append((a.id, spec))
             finally:
                 for ad in adapters.values():
                     await ad.aclose()
@@ -647,8 +656,9 @@ class SessionService:
                     s.add(t)
                 t.name = ap.name or ap.serial
                 t.host = ap.ip or t.host or ""
+                t.mac = ap.mac
                 t.model = ap.model
-                t.venue_id = ap.venue_id or venue_id   # for later password refresh
+                t.venue_id = ap.venue_id or venue_id   # for later password refresh / SZ capture
                 t.ssh_username = "admin"
                 if pw:
                     t.ssh_password = pw

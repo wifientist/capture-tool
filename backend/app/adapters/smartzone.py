@@ -100,3 +100,37 @@ class SmartZoneAdapter:
 
     async def get_ap_password(self, venue_id: str, serial: str) -> ApPassword:
         raise SZError("SmartZone has no per-AP CLI password API — set it on the target")
+
+    # -- Track A packet capture (controller-mediated; no AP SSH needed) --------
+    async def start_file_capture(self, ap_mac: str, interface: str,
+                                 frame_types: list[str] | None = None,
+                                 mac_filter: str | None = None) -> dict:
+        body: dict = {"captureInterface": interface}
+        if frame_types:
+            body["includedFrameTypes"] = frame_types
+        if mac_filter:
+            body["includedMac"] = mac_filter
+        return (await self._req("POST", f"/aps/{ap_mac}/apPacketCapture/startFileCapture",
+                                json=body)).json()
+
+    async def start_streaming(self, ap_mac: str, interface: str, host_ip: str,
+                              frame_types: list[str] | None = None,
+                              mac_filter: str | None = None) -> dict:
+        body: dict = {"captureInterface": interface, "hostIp": host_ip}
+        if frame_types:
+            body["includedFrameTypes"] = frame_types
+        if mac_filter:
+            body["includedMac"] = mac_filter
+        return (await self._req("POST", f"/aps/{ap_mac}/apPacketCapture/startStreaming",
+                                json=body)).json()
+
+    async def capture_state(self, ap_mac: str) -> dict:
+        return (await self._req("GET", f"/aps/{ap_mac}/apPacketCapture")).json()
+
+    async def stop_capture(self, ap_mac: str) -> None:
+        await self._req("POST", f"/aps/{ap_mac}/apPacketCapture/stop")
+
+    async def download_capture(self, ap_mac: str) -> bytes:
+        """Returns the raw download (gzipped tar containing <apMac>/capture0.pcap)."""
+        r = await self._req("POST", f"/aps/{ap_mac}/apPacketCapture/download")
+        return r.content

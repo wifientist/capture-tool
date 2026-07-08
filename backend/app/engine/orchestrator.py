@@ -23,11 +23,66 @@ from ..config import Settings
 from ..models import CaptureSpec, CaptureState, CaptureStatus
 from . import sidecar
 from .rkscli import RkscliClient, RkscliError
-from .rpcap import RpcapReader
+from .rpcap import CaptureStats, RpcapReader
 
 
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+_IFACE_RADIO = {"wifi0": "RADIO24", "wifi1": "RADIO50", "wifi2": "RADIO60"}
+
+
+def _sz_frame_types(flags: str) -> list[str] | None:
+    """Map our -no* exclusion flags to SZ includedFrameTypes (None = all)."""
+    ex = flags.replace("-no", "")
+    types = [t for t, k in (("MANAGEMENT", "m"), ("CONTROL", "c"), ("DATA", "d"))
+             if k not in ex]
+    return types if len(types) < 3 else None
+
+
+def _extract_sz_pcap(data: bytes) -> bytes:
+    """SZ download is a gzipped tar of <apMac>/capture0.pcap — pull the pcap out."""
+    import gzip
+    import io
+    import tarfile
+    try:
+        raw = gzip.decompress(data)
+    except OSError:
+        raw = data
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw)) as tar:
+            for m in tar.getmembers():
+                if m.name.endswith(".pcap"):
+                    f = tar.extractfile(m)
+                    return f.read() if f else b""
+    except tarfile.TarError:
+        if raw[:4] in (b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4"):
+            return raw
+    return b""
+
+
+def _count_pcap(pcap: bytes) -> tuple[int, int, int | None, float | None, float | None]:
+    import struct
+    if len(pcap) < 24:
+        return 0, 0, None, None, None
+    end = "<" if pcap[:4] == b"\xd4\xc3\xb2\xa1" else ">" if pcap[:4] == b"\xa1\xb2\xc3\xd4" else None
+    if end is None:
+        return 0, 0, None, None, None
+    linktype = struct.unpack(end + "I", pcap[20:24])[0]
+    off, frames, byts, first, last = 24, 0, 0, None, None
+    while off + 16 <= len(pcap):
+        ts_sec, ts_usec, incl, _orig = struct.unpack(end + "IIII", pcap[off:off + 16])
+        off += 16
+        if off + incl > len(pcap):
+            break
+        off += incl
+        frames += 1
+        byts += incl
+        t = ts_sec + ts_usec / 1e6
+        first = first if first is not None else t
+        last = t
+    return frames, byts, linktype, first, last
 
 
 # Channel-pin note: rkscli `set channel <if> <ch>` retunes the radio (async, ~4s) and
@@ -48,6 +103,8 @@ class CaptureJob:
     width_mhz: int | None = None
     ssh_username: str | None = None
     ssh_password: str | None = None
+    backend: str = "ssh"
+    sz: dict | None = None            # SmartZone capture params (base_url/user/pw/version/ap_mac)
     state: CaptureState = CaptureState.pending
     error: str | None = None
     channel: int | None = None
@@ -58,12 +115,13 @@ class CaptureJob:
     ended_at: str | None = None
     file_path: Path | None = None
     reader: RpcapReader | None = None
+    stats: CaptureStats | None = None   # used by non-reader backends (sz_api)
     stop_event: threading.Event = field(default_factory=threading.Event)
     _task: asyncio.Task | None = None
     _t0: float | None = None
 
     def status(self) -> CaptureStatus:
-        st = self.reader.stats if self.reader else None
+        st = self.reader.stats if self.reader else self.stats
         elapsed = (time.monotonic() - self._t0) if self._t0 else 0.0
         since = None
         if st and st.last_data_monotonic:
@@ -97,12 +155,19 @@ class Engine:
         job = CaptureJob(id=cid, ap_host=spec.ap_host, iface=spec.iface,
                          name=spec.name, flags=spec.flags, duration_s=spec.duration_s,
                          target_channel=spec.target_channel, width_mhz=spec.width_mhz,
-                         ssh_username=spec.ssh_username, ssh_password=spec.ssh_password)
+                         ssh_username=spec.ssh_username, ssh_password=spec.ssh_password,
+                         backend=spec.backend)
         out = self.settings.capture_dir / f"{cid}.pcap"
-        job.reader = RpcapReader(spec.ap_host, spec.iface, out,
-                                 port=self.settings.rpcap_port, snaplen=self.settings.snaplen,
-                                 max_bytes=self.settings.max_capture_bytes)
         job.file_path = out
+        if spec.backend == "sz_api":
+            job.sz = {"base_url": spec.sz_base_url, "username": spec.sz_username,
+                      "password": spec.sz_password, "version": spec.sz_version,
+                      "ap_mac": spec.sz_ap_mac}
+            job.stats = CaptureStats()
+        else:
+            job.reader = RpcapReader(spec.ap_host, spec.iface, out,
+                                     port=self.settings.rpcap_port, snaplen=self.settings.snaplen,
+                                     max_bytes=self.settings.max_capture_bytes)
         self._jobs[cid] = job
         job._task = asyncio.create_task(self._run(job))
         return job
@@ -124,6 +189,8 @@ class Engine:
 
     # -- lifecycle ------------------------------------------------------------
     async def _run(self, job: CaptureJob) -> None:
+        if job.backend == "sz_api":
+            return await self._run_sz(job)
         try:
             job.state = CaptureState.configuring
             await asyncio.to_thread(self._configure, job)
@@ -158,6 +225,47 @@ class Engine:
             job.stop_event.set()
             job.ended_at = _iso(time.time())
             await asyncio.to_thread(self._finalize_ap, job)
+        finally:
+            self._write_sidecar(job)
+
+    async def _run_sz(self, job: CaptureJob) -> None:
+        """SmartZone Track A: controller-mediated file capture (no AP SSH). Start ->
+        wait duration/stop -> stop -> download -> save pcap -> count frames."""
+        from ..adapters.smartzone import SmartZoneAdapter
+        sz = job.sz or {}
+        radio = _IFACE_RADIO.get(job.iface, "RADIO50")
+        try:
+            job.state = CaptureState.configuring
+            ad = SmartZoneAdapter(sz["base_url"], sz["username"], sz["password"], sz["version"])
+            try:
+                job._t0 = time.monotonic()
+                job.started_at = _iso(time.time())
+                job.stats.last_data_monotonic = time.monotonic()
+                await ad.start_file_capture(sz["ap_mac"], radio,
+                                            frame_types=_sz_frame_types(job.flags))
+                job.state = CaptureState.capturing
+                dur = job.duration_s or self.settings.default_max_duration_s
+                waited = 0.0
+                while waited < dur and not job.stop_event.is_set():
+                    await asyncio.sleep(1.0)
+                    waited += 1.0
+                job.state = CaptureState.finalizing
+                await ad.stop_capture(sz["ap_mac"])
+                data = await ad.download_capture(sz["ap_mac"])
+            finally:
+                await ad.aclose()
+            pcap = _extract_sz_pcap(data)
+            if pcap:
+                job.file_path.write_bytes(pcap)
+                frames, byts, lt, first, last = _count_pcap(pcap)
+                s = job.stats
+                s.frames, s.bytes, s.linktype, s.first_ts, s.last_ts = frames, byts, lt, first, last
+            job.ended_at = _iso(time.time())
+            job.state = CaptureState.done
+        except Exception as exc:
+            job.error = f"{type(exc).__name__}: {exc}"
+            job.state = CaptureState.failed
+            job.ended_at = _iso(time.time())
         finally:
             self._write_sidecar(job)
 

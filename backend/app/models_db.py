@@ -50,6 +50,7 @@ class Target(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
     host: Mapped[str] = mapped_column(String(64))            # mgmt IP
+    mac: Mapped[str | None] = mapped_column(String(32), default=None)   # AP MAC (SZ API keys by MAC)
     model: Mapped[str | None] = mapped_column(String(40), default=None)
     serial: Mapped[str | None] = mapped_column(String(64), default=None)
     controller_id: Mapped[str | None] = mapped_column(

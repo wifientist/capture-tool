@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 
 def build_sidecar(job: "CaptureJob") -> dict[str, Any]:
-    st = job.reader.stats if job.reader else None
+    st = job.reader.stats if job.reader else job.stats
     duration = None
     if st and st.first_ts and st.last_ts:
         duration = round(st.last_ts - st.first_ts, 3)
