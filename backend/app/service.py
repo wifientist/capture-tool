@@ -17,10 +17,11 @@ from .engine.orchestrator import Engine
 from .models import CaptureSpec
 from .models_db import (Artifact, Assignment, CaptureSession, Controller, Target,
                         Template)
-from .schemas import (ApInventoryOut, ArtifactOut, AssignmentCreate, AssignmentOut,
-                      ControllerCreate, ControllerOut, SessionCreate, SessionOut,
-                      SessionTotals, TargetCreate, TargetOut, TemplateCreate,
-                      TemplateOut, VenueOut, validate_controller_auth)
+from .schemas import (ApInventoryOut, ApSurveyOut, ArtifactOut, AssignmentCreate,
+                      AssignmentOut, ChannelUseOut, ControllerCreate, ControllerOut,
+                      RadioOut, SessionCreate, SessionOut, SessionTotals, SurveyOut,
+                      TargetCreate, TargetOut, TemplateCreate, TemplateOut, VenueOut,
+                      WlanOut, validate_controller_auth)
 
 TERMINAL = {"done", "failed", "cancelled"}
 ACTIVE = {"pending", "configuring", "confirming_radio", "awaiting_wireshark",
@@ -642,6 +643,45 @@ class SessionService:
                                ip=a.ip, firmware=a.firmware, state=a.state,
                                venue_id=a.venue_id, already_target=a.serial in have)
                 for a in aps]
+
+    async def survey_venue(self, cid: str, venue_id: str) -> SurveyOut:
+        """Investigate: on-air survey of a zone/venue — per-AP radio channels, active
+        WLANs, and aggregated channel usage to inform which channels to scan."""
+        c = await self._load_controller(cid)
+        ad = self._adapter_for(c)
+        try:
+            aps = await ad.survey_aps(venue_id)
+            try:
+                wlans = await ad.list_wlans(venue_id)
+            except Exception:
+                wlans = []   # WLAN listing is best-effort; the channel survey is the point
+        finally:
+            await ad.aclose()
+
+        ap_outs: list[ApSurveyOut] = []
+        chan: dict[tuple[str, int], dict] = {}
+        for ap in aps:
+            radios = []
+            for r in (ap.radios or []):
+                radios.append(RadioOut(band=r.band, channel=r.channel, width_mhz=r.width_mhz,
+                                       clients=r.clients, ssids=r.ssids, active=r.active))
+                if r.active:
+                    agg = chan.setdefault((r.band, r.channel),
+                                          {"width": r.width_mhz, "aps": 0, "clients": 0})
+                    agg["aps"] += 1
+                    agg["clients"] += (r.clients or 0)
+                    agg["width"] = agg["width"] or r.width_mhz
+            ap_outs.append(ApSurveyOut(name=ap.name, mac=ap.mac, model=ap.model,
+                                       ip=ap.ip, status=ap.status, radios=radios))
+        border = {"2.4G": 0, "5G": 1, "6G": 2}
+        channels = sorted(
+            (ChannelUseOut(band=b, channel=ch, width_mhz=v["width"],
+                           ap_count=v["aps"], client_count=v["clients"])
+             for (b, ch), v in chan.items()),
+            key=lambda c: (border.get(c.band, 9), c.channel))
+        wlan_outs = [WlanOut(name=w.name, ssid=w.ssid, clients=w.clients, band=w.band)
+                     for w in wlans]
+        return SurveyOut(aps=ap_outs, wlans=wlan_outs, channels=channels)
 
     async def import_targets(self, cid: str, venue_id: str, serials: list[str],
                              ssh_password: str | None = None) -> list[TargetOut]:

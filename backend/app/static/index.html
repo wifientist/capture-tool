@@ -73,6 +73,7 @@
 <main>
   <nav class="tabs">
     <button data-tab="inventory" onclick="showTab('inventory')">Inventory<span id="badge-inventory" class="badge"></span></button>
+    <button data-tab="investigate" onclick="showTab('investigate')">Investigate</button>
     <button data-tab="templates" onclick="showTab('templates')">Templates<span id="badge-templates" class="badge"></span></button>
     <button data-tab="sessions" onclick="showTab('sessions')">Sessions<span id="badge-sessions" class="badge"></span></button>
     <button data-tab="history" onclick="showTab('history')">History<span id="badge-history" class="badge"></span></button>
@@ -127,6 +128,20 @@
     </details>
     <div id="invErr" class="warn"></div>
   </div>
+  </section>
+
+  <section id="tab-investigate" class="tab">
+    <div class="card">
+      <div style="font-weight:650;font-size:15px;margin-bottom:6px">Investigate — on-air survey</div>
+      <div style="font-size:12px;color:#8b98a5;margin-bottom:12px">Survey a controller Zone/Venue to see which channels its managed APs are actually operating on and which WLANs are live — so you know which channels to point your monitoring AP at.</div>
+      <div class="grid">
+        <div><label>Controller</label><select id="invCtrl" onchange="invLoadVenues()"></select></div>
+        <div style="grid-column:span 2"><label id="invScopeLbl">Zone / Venue</label><select id="invVenue"><option value="">—</option></select></div>
+        <div style="align-self:end"><button id="invBtn" onclick="runSurvey()">Survey</button></div>
+      </div>
+      <div id="svErr" class="warn"></div>
+    </div>
+    <div id="invResults"></div>
   </section>
 
   <section id="tab-templates" class="tab">
@@ -418,6 +433,7 @@ async function refreshInventory(){
       `<table><thead><tr><th>Target AP</th><th>IP</th><th>Model</th><th>Controller</th><th>Creds</th><th></th></tr></thead><tbody>${TARGETS.map(tgtRow).join('')}</tbody></table>`:'<div class="muted">No targets yet.</div>';
     document.getElementById('tCtrl').innerHTML = `<option value="">— none —</option>`+CONTROLLERS.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
     setBadge('inventory', TARGETS.length);
+    invInit();
   }catch{}
 }
 
@@ -667,10 +683,83 @@ async function refresh(){
   }catch{}
 }
 
+// ---- investigate (on-air survey) ----
+const INV_BANDS = ['2.4G','5G','6G'];
+function svErr(m){ const e=document.getElementById('svErr'); if(e) e.textContent=m||''; }
+function invCtrlOpts(){
+  const cs=CONTROLLERS.filter(c=>['r1','sz'].includes(c.platform));
+  return cs.length ? cs.map(c=>`<option value="${c.id}">${esc(c.name)} · ${c.platform.toUpperCase()}</option>`).join('')
+                   : '<option value="">(add an R1/SmartZone controller first)</option>';
+}
+function invScopeLabel(){
+  const sel=document.getElementById('invCtrl'); if(!sel) return;
+  const c=CONTROLLERS.find(c=>c.id===sel.value);
+  const lbl=document.getElementById('invScopeLbl'); if(lbl) lbl.textContent = c&&c.platform==='sz' ? 'Zone' : 'Venue';
+}
+function invInit(){
+  const sel=document.getElementById('invCtrl'); if(!sel) return;
+  const cur=sel.value; sel.innerHTML=invCtrlOpts(); if(cur) sel.value=cur;
+  invScopeLabel();
+}
+async function invLoadVenues(){
+  invScopeLabel();
+  const cid=document.getElementById('invCtrl').value;
+  const vsel=document.getElementById('invVenue');
+  document.getElementById('invResults').innerHTML=''; svErr('');
+  if(!cid){ vsel.innerHTML='<option value="">—</option>'; return; }
+  vsel.innerHTML='<option value="">loading…</option>';
+  try{ const vs=await api('GET',`/api/controllers/${cid}/venues`);
+    vsel.innerHTML='<option value="">— select —</option>'+vs.map(v=>`<option value="${v.external_id}">${esc(v.name)}</option>`).join('');
+  }catch(e){ vsel.innerHTML='<option value="">—</option>'; svErr(e.message); }
+}
+function invStatePill(s){
+  if(!s) return '<span class=muted>?</span>';
+  const off=/offline|never|disconnect|down|unreach/i.test(s);
+  const on=!off && /online|operational|connect|run/i.test(s);
+  const cls=on?'s-done':off?'s-failed':'s-pending';
+  const label=on?'online':off?'offline':esc(s).replace(/^\d+_\d+_/,'').replace(/_/g,' ');
+  return `<span class="state ${cls}">${label}</span>`;
+}
+async function runSurvey(){
+  const cid=document.getElementById('invCtrl').value, vid=document.getElementById('invVenue').value;
+  if(!cid||!vid){ svErr('pick a controller and a zone/venue'); return; }
+  svErr(''); const btn=document.getElementById('invBtn'); btn.disabled=true;
+  document.getElementById('invResults').innerHTML='<div class="card muted">Surveying the controller…</div>';
+  try{ renderSurvey(await api('GET',`/api/controllers/${cid}/venues/${vid}/survey`)); }
+  catch(e){ document.getElementById('invResults').innerHTML=''; svErr(e.message); }
+  finally{ btn.disabled=false; }
+}
+function invChip(inner){ return `<span style="display:inline-block;margin:3px 6px 3px 0;padding:4px 10px;border:1px solid #2b3540;border-radius:16px;background:#0e1116">${inner}</span>`; }
+function renderSurvey(d){
+  const chanBlock=b=>{ const cs=d.channels.filter(c=>c.band===b); if(!cs.length) return '';
+    const chips=cs.map(c=>invChip(`<b>ch ${c.channel}</b> <span class=muted>${c.width_mhz?c.width_mhz+'MHz · ':''}${c.ap_count} AP${c.ap_count>1?'s':''}${c.client_count?` · ${c.client_count} cl`:''}</span>`)).join('');
+    return `<div style="margin-bottom:8px;display:flex;align-items:baseline"><span class=muted style="display:inline-block;min-width:46px;font-weight:600">${b}</span><span>${chips}</span></div>`; };
+  const chanHtml=INV_BANDS.map(chanBlock).join('')||'<span class=muted>No active radios found in this zone/venue.</span>';
+  const wlanHtml=d.wlans.length ? d.wlans.map(w=>invChip(`${esc(w.name)}${w.band?` <span class=muted>${w.band}</span>`:''}${w.clients!=null?` <span class=muted>· ${w.clients} cl</span>`:''}`)).join('')
+                                : '<span class=muted>none reported</span>';
+  const cell=(a,b)=>{ const r=(a.radios||[]).find(x=>x.band===b);
+    if(!r||!r.active) return '<span class=muted>—</span>';
+    return `<b>ch ${r.channel}</b>${r.width_mhz?` <span class=muted>/${r.width_mhz}</span>`:''}${r.clients?` <span class=muted>(${r.clients} cl)</span>`:''}`
+      +(r.ssids&&r.ssids.length?`<br><span class=muted style="font-size:11px">${r.ssids.map(esc).join(', ')}</span>`:''); };
+  const apRows=d.aps.map(a=>`<tr>
+    <td>${esc(a.name)}<br><span class=muted>${esc(a.model||'')}${a.mac?' · '+esc(a.mac):''}</span></td>
+    <td>${invStatePill(a.status)}</td>
+    <td>${cell(a,'2.4G')}</td><td>${cell(a,'5G')}</td><td>${cell(a,'6G')}</td></tr>`).join('');
+  document.getElementById('invResults').innerHTML=`
+    <div class="card"><h2>Channels in use — candidates to monitor</h2>
+      <div style="font-size:12px;color:#8b98a5;margin-bottom:10px">Managed APs are actively broadcasting on these channels. Point your monitoring AP at one of them to capture that traffic.</div>
+      ${chanHtml}</div>
+    <div class="card"><h2>Active WLANs</h2>${wlanHtml}</div>
+    <div class="card"><h2>Access points (${d.aps.length})</h2>
+      <table><thead><tr><th>AP</th><th>Status</th><th>2.4 GHz</th><th>5 GHz</th><th>6 GHz</th></tr></thead>
+      <tbody>${apRows||'<tr><td colspan=5 class=muted>No APs in this zone/venue.</td></tr>'}</tbody></table></div>`;
+}
+
 // ---- tabs ----
 function showTab(name){
   document.querySelectorAll('.tab').forEach(s=>s.classList.toggle('active', s.id==='tab-'+name));
   document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab===name));
+  if(name==='investigate') invInit();
 }
 function setBadge(name, n){ const el=document.getElementById('badge-'+name); if(el) el.textContent = n||''; el && (el.style.display = n?'inline-block':'none'); }
 

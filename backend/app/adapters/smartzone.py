@@ -13,9 +13,25 @@ SZ controllers typically use self-signed TLS on :8443, so cert verification is o
 """
 from __future__ import annotations
 
+import re
+
 import httpx
 
-from .base import ApInventory, ApPassword, Venue
+from .base import ApInventory, ApPassword, ApSurvey, RadioSurvey, Venue, WlanInfo
+
+_WIDTH_RE = re.compile(r"\((\d+)\s*MHz\)", re.I)
+
+
+def _int_or(v, default=0):
+    try:
+        return int(v) if v not in (None, "", "N/A") else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _sz_width(s) -> int | None:
+    m = _WIDTH_RE.search(str(s)) if s else None
+    return int(m.group(1)) if m else None
 
 
 class SZError(Exception):
@@ -100,6 +116,37 @@ class SmartZoneAdapter:
 
     async def get_ap_password(self, venue_id: str, serial: str) -> ApPassword:
         raise SZError("SmartZone has no per-AP CLI password API — set it on the target")
+
+    # -- investigate (on-air survey) ------------------------------------------
+    async def survey_aps(self, venue_id: str) -> list[ApSurvey]:
+        """Per-AP, per-radio operating channel/width/clients for a zone (operational
+        data from /query/ap: channel*gValue = channel, channel*G string = width)."""
+        body = {"filters": [{"type": "ZONE", "value": venue_id}], "page": 1, "limit": 1000}
+        js = (await self._req("POST", "/query/ap", json=body)).json()
+        out = []
+        for a in self._as_list(js):
+            radios = []
+            for band, chv, chs, cl in (
+                ("2.4G", "channel24gValue", "channel24G", "numClients24G"),
+                ("5G", "channel50gValue", "channel5G", "numClients5G"),
+                ("6G", "channel6gValue", "channel6G", "numClients6G")):
+                radios.append(RadioSurvey(
+                    band=band, channel=_int_or(a.get(chv)),
+                    width_mhz=_sz_width(a.get(chs)),
+                    clients=_int_or(a.get(cl), None)))
+            out.append(ApSurvey(
+                name=a.get("deviceName") or a.get("apMac", "?"),
+                mac=a.get("apMac"), model=a.get("model"), ip=a.get("ip"),
+                status=a.get("status") or a.get("connectionState"),
+                radios=radios))
+        return out
+
+    async def list_wlans(self, venue_id: str) -> list[WlanInfo]:
+        body = {"filters": [{"type": "ZONE", "value": venue_id}], "page": 1, "limit": 1000}
+        js = (await self._req("POST", "/query/wlan", json=body)).json()
+        return [WlanInfo(name=w.get("name") or w.get("ssid", "?"), ssid=w.get("ssid"),
+                         clients=_int_or(w.get("clients", w.get("numClients")), None))
+                for w in self._as_list(js)]
 
     # -- Track A packet capture (controller-mediated; no AP SSH needed) --------
     async def start_file_capture(self, ap_mac: str, interface: str,

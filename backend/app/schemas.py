@@ -188,6 +188,46 @@ class ApInventoryOut(BaseModel):
     already_target: bool = False   # already imported (by serial)
 
 
+# -- investigate (on-air survey) ---------------------------------------------
+class RadioOut(BaseModel):
+    band: str
+    channel: int
+    width_mhz: int | None = None
+    clients: int | None = None
+    ssids: list[str] | None = None
+    active: bool = False
+
+
+class ApSurveyOut(BaseModel):
+    name: str
+    mac: str | None = None
+    model: str | None = None
+    ip: str | None = None
+    status: str | None = None
+    radios: list[RadioOut] = []
+
+
+class WlanOut(BaseModel):
+    name: str
+    ssid: str | None = None
+    clients: int | None = None
+    band: str | None = None
+
+
+class ChannelUseOut(BaseModel):
+    band: str
+    channel: int
+    width_mhz: int | None = None
+    ap_count: int = 0
+    client_count: int = 0
+
+
+class SurveyOut(BaseModel):
+    aps: list[ApSurveyOut] = []
+    wlans: list[WlanOut] = []
+    channels: list[ChannelUseOut] = []   # aggregated active-channel usage, sorted by band/channel
+
+
 class ImportRequest(BaseModel):
     venue_id: str
     serials: list[str] = Field(min_length=1)

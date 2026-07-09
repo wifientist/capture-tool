@@ -15,8 +15,8 @@ from .models import CaptureSpec, CaptureState, CaptureStatus
 from .schemas import (ApInventoryOut, ArtifactOut, AssignmentCreate, ControllerCreate,
                       ControllerOut, ControllerUpdate, ImportRequest, Instantiate,
                       MergeRequest, SaveTemplate, SessionCreate, SessionOut, SessionStart,
-                      TargetCreate, TargetOut, TargetUpdate, TemplateCreate, TemplateOut,
-                      VenueOut)
+                      SurveyOut, TargetCreate, TargetOut, TargetUpdate, TemplateCreate,
+                      TemplateOut, VenueOut)
 from .service import SessionService
 
 STATIC = Path(__file__).parent / "static"
@@ -108,6 +108,19 @@ async def controller_venues(cid: str) -> list[VenueOut]:
 async def controller_venue_aps(cid: str, venue_id: str) -> list[ApInventoryOut]:
     try:
         return await app.state.service.list_controller_venue_aps(cid, venue_id)
+    except KeyError:
+        raise HTTPException(404, "unknown controller")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"controller API error: {e}")
+
+
+@app.get("/api/controllers/{cid}/venues/{venue_id}/survey", response_model=SurveyOut)
+async def controller_venue_survey(cid: str, venue_id: str) -> SurveyOut:
+    """Investigate: on-air survey of a zone/venue — AP channels + active WLANs."""
+    try:
+        return await app.state.service.survey_venue(cid, venue_id)
     except KeyError:
         raise HTTPException(404, "unknown controller")
     except ValueError as e:

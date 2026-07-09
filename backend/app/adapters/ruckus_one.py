@@ -10,7 +10,7 @@ import time
 
 import httpx
 
-from .base import ApInventory, ApPassword, Venue
+from .base import ApInventory, ApPassword, ApSurvey, RadioSurvey, Venue, WlanInfo
 
 REGION_HOSTS = {
     "na": "https://api.ruckus.cloud",
@@ -71,6 +71,20 @@ class RuckusOneAdapter:
             raise R1Error(f"GET {path} HTTP {r.status_code}: {r.text[:160]}")
         return r
 
+    async def _post(self, path: str, body: dict) -> httpx.Response:
+        tok = await self._bearer()
+        hdr = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json",
+               "Accept": "application/json"}
+        r = await self._http.post(f"{self.base}{path}", json=body, headers=hdr)
+        if r.status_code == 401:
+            self._token = None
+            tok = await self._bearer()
+            hdr["Authorization"] = f"Bearer {tok}"
+            r = await self._http.post(f"{self.base}{path}", json=body, headers=hdr)
+        if r.status_code >= 400:
+            raise R1Error(f"POST {path} HTTP {r.status_code}: {r.text[:160]}")
+        return r
+
     # -- inventory ------------------------------------------------------------
     @staticmethod
     def _as_list(js) -> list:
@@ -113,3 +127,48 @@ class RuckusOneAdapter:
         return ApPassword(password=js.get("apPassword"),
                           expire_time=js.get("expireTime"),
                           updated_time=js.get("updatedTime"))
+
+    # -- investigate (on-air survey) ------------------------------------------
+    async def survey_aps(self, venue_id: str) -> list[ApSurvey]:
+        """Per-AP radioStatuses (band/channel/width + SSIDs broadcast per radio)."""
+        js = (await self._post("/venues/aps/query", {"page": 1, "pageSize": 1000})).json()
+        out = []
+        for a in self._as_list(js):
+            if venue_id and a.get("venueId") != venue_id:
+                continue
+            radios = []
+            for rs in (a.get("radioStatuses") or []):
+                ch = rs.get("channel")
+                try:
+                    ch = int(ch) if ch not in (None, "", "N/A") else 0
+                except (TypeError, ValueError):
+                    ch = 0
+                try:
+                    width = int(rs.get("channelBandwidth")) if rs.get("channelBandwidth") else None
+                except (TypeError, ValueError):
+                    width = None
+                nets = rs.get("wifiNetworks") or []
+                ssids = [n.get("ssid") or n.get("name") for n in nets
+                         if isinstance(n, dict)] if nets and isinstance(nets[0], dict) else \
+                        [str(n) for n in nets]
+                radios.append(RadioSurvey(
+                    band=rs.get("band", "?"), channel=ch, width_mhz=width,
+                    clients=rs.get("numClients") or rs.get("clientCount"),
+                    ssids=[s for s in ssids if s] or None))
+            out.append(ApSurvey(
+                name=a.get("name") or a.get("serialNumber", "?"),
+                mac=a.get("mac") or a.get("macAddress"), model=a.get("model"),
+                ip=a.get("ip") or a.get("externalIp"),
+                status=a.get("status") or a.get("networkStatus"), radios=radios))
+        return out
+
+    async def list_wlans(self, venue_id: str) -> list[WlanInfo]:
+        """Actively-broadcast SSIDs, aggregated from each AP radio's wifiNetworks."""
+        aps = await self.survey_aps(venue_id)
+        seen: dict[str, WlanInfo] = {}
+        for ap in aps:
+            for r in (ap.radios or []):
+                for ssid in (r.ssids or []):
+                    if ssid not in seen:
+                        seen[ssid] = WlanInfo(name=ssid, ssid=ssid, band=r.band)
+        return list(seen.values())
