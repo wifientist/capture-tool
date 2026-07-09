@@ -23,7 +23,8 @@ from .schemas import (ApInventoryOut, ArtifactOut, AssignmentCreate, AssignmentO
                       TemplateOut, VenueOut, validate_controller_auth)
 
 TERMINAL = {"done", "failed", "cancelled"}
-ACTIVE = {"pending", "configuring", "confirming_radio", "capturing", "finalizing", "stopping"}
+ACTIVE = {"pending", "configuring", "confirming_radio", "awaiting_wireshark",
+          "capturing", "finalizing", "stopping"}
 
 
 def _now_iso() -> str:
@@ -398,6 +399,7 @@ class SessionService:
                 raise ValueError("need at least 2 assignment pcaps with data to merge")
             out = self.engine.settings.capture_dir / f"{sid}_merged.pcap"
         meta = await asyncio.to_thread(merge_mod.merge_pcaps, [Path(p) for p in inputs], out)
+        out = Path(meta.get("path", out))   # merge may emit .pcapng for mixed link-types
         aid = uuid.uuid4().hex[:12]
         async with self.db.sessionmaker() as s:
             art = Artifact(id=aid, session_id=sid, kind="merged_pcap", file_path=str(out),

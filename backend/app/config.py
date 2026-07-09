@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     snaplen: int = 65535
     default_max_duration_s: int = 120          # cap open-ended sessions (blank duration)
     max_capture_bytes: int = 2_000_000_000     # ~2 GB per pcap safety cap
+    arm_timeout_s: int = 600                    # Wireshark-stream: max wait for the analyst to arm
 
     def resolve_database_url(self) -> str:
         if self.database_url:

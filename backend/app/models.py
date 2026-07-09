@@ -10,6 +10,7 @@ class CaptureState(str, Enum):
     pending = "pending"
     configuring = "configuring"
     confirming_radio = "confirming_radio"
+    awaiting_wireshark = "awaiting_wireshark"   # stream is live; waiting for analyst to arm
     capturing = "capturing"
     finalizing = "finalizing"
     done = "done"

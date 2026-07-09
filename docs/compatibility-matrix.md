@@ -24,7 +24,7 @@ form factor, and radio count. Update the cells as combinations are tested.
 | ID | Method | Mechanism | Model/firmware sensitivity |
 |----|--------|-----------|----------------------------|
 | **A** | **SZ API — file** | `apPacketCapture/startFileCapture` → `stop` → `download` (gzip tar of radiotap pcap) over HTTPS | **None.** Pure documented API; controller handles hardware. Works remotely (no AP↔tool path). Radio chosen by band enum (`RADIO24/50/60`). |
-| **B** | **SZ API — stream → Wireshark** | `apPacketCapture/startStreaming(hostIp)` opens rpcapd on the AP; analyst points Wireshark at `rpcap://<ap>:2002/<monitor-iface>` | Needs AP↔Wireshark reachability + rpcap. Monitor iface **discovered at runtime** (the radiotap/DLT-127 iface), so no hardcoded names. |
+| **B** | **SZ API — stream → Wireshark** | `apPacketCapture/startStreaming(hostIp)` opens rpcapd on the AP; analyst points Wireshark at `rpcap://<ap>:2002/<monitor-iface>`. The capture then **holds in `awaiting_wireshark`** until the analyst arms it — the stream is already live, so they can attach Wireshark before the auto-stop clock starts (safety cap `CT_ARM_TIMEOUT_S`, default 600 s) | Needs AP↔Wireshark reachability + rpcap. Monitor iface **discovered at runtime** (the radiotap/DLT-127 iface), so no hardcoded names. |
 | **C** | **SZ API — stream → in-app** | Same `startStreaming`; the tool's `RpcapReader` pulls the discovered monitor iface for live counters + pcap | Same as B, plus tool host must reach the AP. |
 | **D** | **rkscli SSH + rpcap** | SSH `set capture <if> stream` + rpcap dial-back (DLT_PPI/192) | Needs SSH enabled + an AP CLI password. Used by Ruckus One (per-AP password via API). SZ APs typically have SSH disabled / no per-AP password API. |
 

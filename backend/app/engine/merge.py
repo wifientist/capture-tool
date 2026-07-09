@@ -64,6 +64,19 @@ def _linktype_of(path: Path) -> int:
         return _read_global(f)[1]
 
 
+def _classic_linktype(path: Path) -> int | None:
+    """Link-type if *path* is a classic pcap; None if it's pcapng / not classic /
+    unreadable. Used to decide the merge output format."""
+    try:
+        with open(path, "rb") as f:
+            if f.read(4) not in (b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4"):
+                return None
+            f.seek(0)
+            return _read_global(f)[1]
+    except (OSError, MergeError, struct.error):
+        return None
+
+
 def _python_merge(inputs: list[Path], out: Path) -> None:
     linktypes = {_linktype_of(p) for p in inputs}
     if len(linktypes) > 1:
@@ -83,6 +96,13 @@ def analyze_alignment(inputs: list[Path]) -> dict:
     should be close; a large spread flags clock skew (or very staggered starts)."""
     per = []
     for p in inputs:
+        if _classic_linktype(p) is None:
+            # pcapng / non-classic input: our lightweight record walker can't parse
+            # it. Alignment is best-effort metadata, so note it and move on.
+            per.append({"name": p.name, "frames": None, "first_ts": None,
+                        "last_ts": None, "duration_s": 0.0,
+                        "note": "non-classic pcap — alignment not analyzed"})
+            continue
         first = last = None
         n = 0
         for s, u, _rec in _iter_records(p):
@@ -111,21 +131,46 @@ def analyze_alignment(inputs: list[Path]) -> dict:
 
 
 def merge_pcaps(inputs: list[Path], out: Path) -> dict:
-    """Merge *inputs* (time-ordered) into *out*. Returns artifact metadata."""
+    """Merge *inputs* (time-ordered) into *out*. Returns artifact metadata,
+    including the actual output path (``path``) and format (``format``).
+
+    Classic pcap holds a single global link-type, so it can only represent inputs
+    that all share one link-type. Our captures don't: SSH/rkscli emit DLT_PPI
+    (192), SmartZone streaming taps present radiotap (127), and SZ file captures
+    vary by model/firmware. Feeding mixed link-types to `mergecap -F pcap` fails
+    with "can't be written as a pcap file". So we emit pcapng (per-interface
+    link-types) whenever the inputs aren't one uniform classic-pcap link-type, and
+    keep classic pcap only for the uniform case (widest tool compatibility)."""
     inputs = [Path(p) for p in inputs if Path(p).exists()]
     if not inputs:
         raise MergeError("no input pcaps to merge")
     out = Path(out)
-    tool = "mergecap" if shutil.which("mergecap") else "python"
-    if tool == "mergecap":
-        cmd = ["mergecap", "-F", "pcap", "-w", str(out), *map(str, inputs)]
+
+    lts = [_classic_linktype(p) for p in inputs]
+    uniform_pcap = all(lt is not None for lt in lts) and len({*lts}) == 1
+    fmt = "pcap" if uniform_pcap else "pcapng"
+    if fmt == "pcapng":
+        out = out.with_suffix(".pcapng")
+
+    if shutil.which("mergecap"):
+        tool = "mergecap"
+        cmd = ["mergecap", "-F", fmt, "-w", str(out), *map(str, inputs)]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             raise MergeError(f"mergecap failed: {proc.stderr.strip()[:200]}")
-    else:
+    elif uniform_pcap:
+        tool = "python"
         _python_merge(inputs, out)
+    else:
+        classic = sorted({lt for lt in lts if lt is not None})
+        raise MergeError(
+            f"inputs have mixed link-types (classic {classic}"
+            + (" plus pcapng/non-classic input" if any(lt is None for lt in lts) else "")
+            + ") — install mergecap to merge them into a pcapng")
     return {
         "tool": tool,
+        "format": fmt,
+        "path": str(out),
         "inputs": [p.name for p in inputs],
         "size_bytes": out.stat().st_size,
         "sha256": _sha256(out),

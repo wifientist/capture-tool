@@ -10,8 +10,10 @@ templates**, runnable as a **Docker + Postgres** stack. A *session* is a named p
 mapping a set of channels to cover. State persists via async SQLAlchemy (SQLite for the venv
 slice, Postgres in Docker via `CT_DATABASE_URL`; Alembic migrations). A startup reconciler
 fails crash-orphaned captures and idles their APs. Completed sessions can be **time-aligned
-merged** into one pcap (mergecap in Docker, pure-Python fallback in the venv — originals kept),
-and any session can be **saved as a template** and re-instantiated. Next: the R1 control-plane
+merged** into one file (mergecap in Docker, pure-Python fallback in the venv — originals kept);
+the merge emits classic pcap when every input shares one link-type and **pcapng** otherwise,
+since mixed link-types (PPI 192 from SSH, radiotap 127 from SZ streaming) cannot coexist in a
+classic pcap. Any session can be **saved as a template** and re-instantiated. Next: the R1 control-plane
 adapter (inventory + channel/WLAN pinning) and a React front end.
 
 ## How it works
@@ -64,9 +66,10 @@ the controller). See capture-recipes.md — a WLAN-less radio returns `Interface
 | GET | `/api/sessions` · `/{id}` | list / full status (live-overlaid) |
 | GET | `/api/sessions/{id}/events` | SSE aggregate live status |
 | DELETE | `/api/sessions/{id}` | delete (draft/done/failed) |
+| POST | `/api/sessions/{id}/assignments/{aid}/arm` | stream→Wireshark: confirm Wireshark is attached, start the timed window |
 | POST | `/api/sessions/{id}/merge` | time-aligned merge `{assignment_ids?}` → artifact |
 | GET | `/api/assignments/{aid}/download` · `/sidecar` | pcap · sidecar json |
-| GET | `/api/artifacts/{aid}/download` | merged pcap |
+| GET | `/api/artifacts/{aid}/download` | merged pcap/pcapng |
 | GET/POST/DELETE | `/api/controllers` | manage controllers (hold AP SSH creds centrally) |
 | GET/POST/DELETE | `/api/targets` | manage capture-target APs |
 | GET/POST | `/api/templates` · `/api/sessions/{id}/save-template` | list / save-from-session |

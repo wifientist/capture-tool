@@ -126,6 +126,7 @@ class CaptureJob:
     reader: RpcapReader | None = None
     stats: CaptureStats | None = None   # used by non-reader backends (sz_api)
     stop_event: threading.Event = field(default_factory=threading.Event)
+    arm_event: threading.Event = field(default_factory=threading.Event)  # analyst confirmed Wireshark ready
     _task: asyncio.Task | None = None
     _t0: float | None = None
 
@@ -184,6 +185,15 @@ class Engine:
         job._task = asyncio.create_task(self._run(job))
         return job
 
+    def arm(self, cid: str) -> bool:
+        """Confirm the analyst's Wireshark is ready: release a stream_wireshark
+        capture from awaiting_wireshark into its timed window. No-op otherwise."""
+        job = self._jobs.get(cid)
+        if not job or job.state != CaptureState.awaiting_wireshark:
+            return False
+        job.arm_event.set()
+        return True
+
     async def stop(self, cid: str) -> bool:
         job = self._jobs.get(cid)
         if not job or job.state in (CaptureState.done, CaptureState.failed,
@@ -239,6 +249,16 @@ class Engine:
             await asyncio.to_thread(self._finalize_ap, job)
         finally:
             self._write_sidecar(job)
+
+    async def _await_arm(self, job: CaptureJob) -> None:
+        """Hold until the analyst arms the capture (Wireshark ready), the capture is
+        stopped, or a safety cap elapses. Streaming is already live throughout."""
+        cap = self.settings.arm_timeout_s
+        waited = 0.0
+        while (waited < cap and not job.arm_event.is_set()
+               and not job.stop_event.is_set()):
+            await asyncio.sleep(0.5)
+            waited += 0.5
 
     async def _sz_wait(self, job: CaptureJob) -> None:
         """Sleep for the capture duration (or the open-ended cap), honoring stop."""
@@ -325,6 +345,19 @@ class Engine:
         if job.sz_mode == "stream_wireshark":
             # We only enable + advertise the stream; the analyst's Wireshark pulls it.
             # (Consuming it ourselves would take the AP's single capture slot.)
+            # The stream is live NOW (URL is up), but hold off the auto-stop clock:
+            # give the analyst time to point Wireshark at the URL and start capturing
+            # before frames could be missed. We start the timed window only once they
+            # arm it (or a safety cap elapses).
+            job.state = CaptureState.awaiting_wireshark
+            await self._await_arm(job)
+            if job.stop_event.is_set():
+                job.state = CaptureState.finalizing
+                await ad.stop_capture(sz["ap_mac"])
+                return
+            # reset the clock so the recorded window is the armed capture, not the wait
+            job._t0 = time.monotonic()
+            job.started_at = _iso(time.time())
             job.state = CaptureState.capturing
             await self._sz_wait(job)
             job.state = CaptureState.finalizing

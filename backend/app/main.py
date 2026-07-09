@@ -237,6 +237,18 @@ async def stop_session(sid: str) -> SessionOut:
     return await app.state.service.get_session(sid)
 
 
+@app.post("/api/sessions/{sid}/assignments/{aid}/arm", response_model=SessionOut)
+async def arm_assignment(sid: str, aid: str) -> SessionOut:
+    # stream_wireshark holds in `awaiting_wireshark` until the analyst has Wireshark
+    # pointed at the rpcap URL; arming starts the timed capture window.
+    if not app.state.engine.arm(aid):
+        raise HTTPException(409, "assignment is not awaiting Wireshark setup")
+    out = await app.state.service.get_session(sid)
+    if not out:
+        raise HTTPException(404, "unknown session")
+    return out
+
+
 @app.get("/api/sessions/{sid}/events")
 async def session_events(sid: str) -> StreamingResponse:
     if not await app.state.service.get_session(sid):
@@ -311,8 +323,9 @@ async def download_artifact(art_id: str) -> FileResponse:
     path = await app.state.service.artifact_file(art_id)
     if not path:
         raise HTTPException(404, "no artifact file")
-    return FileResponse(path, media_type="application/vnd.tcpdump.pcap",
-                        filename=path.name)
+    media = ("application/x-pcapng" if path.suffix == ".pcapng"
+             else "application/vnd.tcpdump.pcap")
+    return FileResponse(path, media_type=media, filename=path.name)
 
 
 @app.get("/api/assignments/{aid}/download")

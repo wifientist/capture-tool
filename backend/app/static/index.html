@@ -34,6 +34,7 @@
   .state { font-size: 12px; padding: 2px 8px; border-radius: 20px; font-weight: 600; white-space: nowrap; }
   .s-capturing, .s-running { background: #1f6feb33; color: #6cb6ff; }
   .s-configuring, .s-confirming_radio, .s-finalizing, .s-stopping, .s-pending { background: #9e6a0333; color: #e3b341; }
+  .s-awaiting_wireshark { background: #8957e533; color: #d2a8ff; }
   .s-done { background: #23863633; color: #4ac26b; }
   .s-failed, .s-cancelled { background: #b6232433; color: #ff7b72; }
   .s-draft { background: #30363d; color: #adbac7; }
@@ -233,7 +234,8 @@ function dfsHint(){
 let draft = null;         // {id, name} being built
 let TARGETS = [], CONTROLLERS = [];
 let editCtrlId = null, editTgtId = null;
-const tOpt = t => `<option value="${t.id}">${esc(t.name)} · ${t.host}${t.has_stored_password?'':' ⚠no pw'}</option>`;
+const platTag = p => p ? `(${p.toUpperCase()}) ` : '';   // (SZ)/(R1); blank for unlinked APs
+const tOpt = t => `<option value="${t.id}">${platTag(t.controller_platform)}${esc(t.name)} · ${t.host}${t.has_stored_password?'':' ⚠no pw'}</option>`;
 const targetOpts = () => TARGETS.length ? TARGETS.map(tOpt).join('') : `<option value="">(add a target under Inventory first)</option>`;
 const targetMultiOpts = () => TARGETS.map(tOpt).join('');
 const widthOpts = () => `<option value="">AP default</option>`+[20,40,80,160].map(w=>`<option value="${w}">${w} MHz</option>`).join('');
@@ -581,12 +583,14 @@ async function refreshTemplates(){
 }
 
 // ---- sessions list ----
-function assignmentRow(a){
+function assignmentRow(a, sid){
   const last = a.seconds_since_last_frame==null ? '' : `<span class=muted>${a.seconds_since_last_frame}s ago</span>`;
   const modeTag = a.capture_mode && a.capture_mode!=='file' ? ` <span class=muted>· ${modeLabel(a.capture_mode)}</span>` : '';
+  const awaiting = a.status==='awaiting_wireshark';
   // stream_wireshark: no local file/counters — hand the analyst the rpcap URL to open in Wireshark
   const ws = a.stream_url ? `<br><span class=muted>Wireshark:</span> <code>${esc(a.stream_url)}</code>
-      <button class=secondary style="padding:1px 6px" onclick="copyText('${esc(a.stream_url)}')">copy</button>` : '';
+      <button class=secondary style="padding:1px 6px" onclick="copyText('${esc(a.stream_url)}')">copy</button>
+      ${awaiting?`<br><span style="color:#d2a8ff">● stream live — open it in Wireshark and start capturing, then hit “Start capture”. The timer won’t run until you do.</span>`:''}` : '';
   return `<tr>
     <td>${esc(a.ap_host)}<br><span class=muted>${a.iface}${a.linktype?` · dlt ${a.linktype}`:''}${modeTag}</span>${ws}</td>
     <td>${a.target_channel??'—'}${a.width_mhz?` <span class=muted>/${a.width_mhz}</span>`:''}${a.channel&&a.channel!==a.target_channel?` <span class=muted>(act ${a.channel})</span>`:''}</td>
@@ -594,8 +598,13 @@ function assignmentRow(a){
     <td>${a.frames.toLocaleString()}</td><td>${fmtBytes(a.bytes)}</td>
     <td>${a.elapsed_s!=null?a.elapsed_s+'s':''} ${last}</td>
     <td class="row-actions">
+      ${awaiting&&sid?`<button onclick="armAssignment('${sid}','${a.id}')">▶ Start capture</button>`:''}
       ${a.has_file?`<button class=secondary onclick="location.href='/api/assignments/${a.id}/download'">pcap</button>`:''}
       ${a.has_file?`<button class=secondary onclick="window.open('/api/assignments/${a.id}/sidecar')">json</button>`:''}</td></tr>`;
+}
+async function armAssignment(sid, aid){
+  try{ await api('POST',`/api/sessions/${sid}/assignments/${aid}/arm`,{}); refresh(); }
+  catch(e){ alert('Start capture: '+e.message); }
 }
 function sessionCard(s){
   const t=s.totals, active=s.status==='running'||s.status==='stopping';
@@ -607,7 +616,7 @@ function sessionCard(s){
         ${al.aligned?'✓ time-aligned':'⚠ check alignment'} — start spread ${al.start_spread_s}s · overlap ${al.overlap_s}s${al.aligned?' (NTP-consistent)':' — AP clock skew or staggered starts; merged timeline may be off'}</div>`;
     }
     return `<div class="muted" style="margin-top:6px">
-     merged · ${a.meta?.tool||'?'} · ${fmtBytes(a.size_bytes)} · <code>${(a.sha256||'').slice(0,12)}</code>
+     merged · ${a.meta?.format||'pcap'} · ${a.meta?.tool||'?'} · ${fmtBytes(a.size_bytes)} · <code>${(a.sha256||'').slice(0,12)}</code>
      <button class=secondary onclick="location.href='/api/artifacts/${a.id}/download'">download</button>${align}</div>`;
   }).join('');
   return `<div class="card">
@@ -618,7 +627,7 @@ function sessionCard(s){
         ${t.failed?` · <span style=color:#ff7b72>${t.failed} failed</span>`:''}</span>
     </div>
     <table><thead><tr><th>AP · radio</th><th>Chan</th><th>State</th><th>Frames</th><th>Bytes</th><th>Elapsed</th><th></th></tr></thead>
-      <tbody>${s.assignments.map(assignmentRow).join('')||'<tr><td colspan=7 class=muted>No assignments</td></tr>'}</tbody></table>
+      <tbody>${s.assignments.map(a=>assignmentRow(a,s.id)).join('')||'<tr><td colspan=7 class=muted>No assignments</td></tr>'}</tbody></table>
     ${arts}
     <div class="sess-actions" style="margin-top:12px">
       ${s.status==='draft'?`<button onclick="continueDraft('${s.id}','${esc(s.name)}')">Edit / start</button>`:''}
